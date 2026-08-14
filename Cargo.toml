@@ -1,0 +1,18 @@
+[workspace]
+members = ["crates/ukf-core", "firmware/nrf52840-ble-usb"]
+resolver = "3"
+
+[patch.crates-io]
+# Local clean-room maintenance fork: nrf-usbd 0.3.0's synchronous READY wait
+# is bounded in this repository so a failed peripheral cannot wedge recovery.
+nrf-usbd = { path = "firmware/nrf52840-ble-usb/vendor/nrf-usbd" }
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tmaru-eng/unified-keyboard-firmware"
+rust-version = "1.97"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

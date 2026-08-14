@@ -1,0 +1,176 @@
+:root { color: #e9edf5; background: #111827; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input { font: inherit; }
+.app-shell { width: min(960px, calc(100% - 2rem)); margin: 0 auto; padding: 2.5rem 0 4rem; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+h1, h2, h3, p { margin-top: 0; }
+h1 { font-size: clamp(1.6rem, 5vw, 2.4rem); }
+.eyebrow { color: #7dd3fc; font-size: .75rem; font-weight: 700; letter-spacing: .12em; }
+.status { border-radius: 99px; padding: .45rem .8rem; background: #374151; white-space: nowrap; }
+.status.ready { background: #14532d; color: #bbf7d0; }
+nav { display: flex; gap: .5rem; overflow-x: auto; border-bottom: 1px solid #374151; margin: 2rem 0; }
+nav button { border: 0; background: transparent; color: #b6c2d9; padding: .75rem 1rem; cursor: pointer; }
+nav button.active { color: white; border-bottom: 2px solid #38bdf8; }
+.lede { color: #b6c2d9; max-width: 62ch; }
+.cards, .demo-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+article { background: #1f2937; padding: 1.1rem; border: 1px solid #374151; border-radius: .75rem; }
+article span, small { color: #7dd3fc; font-size: .8rem; }
+.profile { margin-block: 1rem; }
+.toggle { display: flex; align-items: center; gap: .6rem; padding: .5rem 0; cursor: pointer; }
+.toggle input { inline-size: 1.1rem; block-size: 1.1rem; accent-color: #38bdf8; }
+.error { background: #7f1d1d; color: #fecaca; padding: .8rem 1rem; border-radius: .5rem; }
+.simulation-notice { border: 1px solid #0ea5e9; background: #0c4a6e; color: #e0f2fe; padding: 1rem; border-radius: .75rem; }
+.scenario { display: flex; flex-direction: column; min-height: 210px; }
+.scenario p { color: #b6c2d9; flex: 1; }
+.primary { border: 0; border-radius: .5rem; background: #0284c7; color: white; padding: .7rem 1rem; cursor: pointer; font-weight: 700; }
+.primary:hover { background: #0369a1; }
+.primary:disabled { cursor: wait; opacity: .6; }
+.demo-hint { color: #93c5fd; margin-top: 1rem; }
+.simulation-label { display: inline-block; color: #fde68a; background: #713f12; border-radius: .35rem; padding: .4rem .65rem; font-size: .8rem; font-weight: 700; }
+.diagnostic-panel { background: #1f2937; border: 1px solid #374151; border-radius: .75rem; padding: 1rem; margin-top: 1rem; }
+.hid-report { display: block; overflow-x: auto; background: #030712; color: #7dd3fc; padding: 1rem; border-radius: .5rem; font: 700 clamp(.9rem, 3vw, 1.25rem)/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .06em; }
+.event-log { margin-bottom: 0; padding-left: 1.4rem; color: #dbeafe; }
+.event-log li { padding: .35rem 0; }
+@media (max-width: 560px) { header { align-items: flex-start; flex-direction: column; } .status { align-self: flex-start; } }
+
+/* Virtual keyboard: drives the real board and shows what the host received. */
+.virtual-keyboard__controls {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.virtual-keyboard__row {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.virtual-keyboard__row-label {
+  min-width: 6rem;
+  font-size: 0.85rem;
+  opacity: 0.7;
+}
+
+.virtual-keyboard__row button {
+  min-width: 2.5rem;
+  font-family: inherit;
+}
+
+/* The capture area must look focusable: keystrokes only arrive here. */
+.virtual-keyboard__capture {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  border: 2px dashed currentColor;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
+.virtual-keyboard__capture:focus {
+  outline: 2px solid currentColor;
+  opacity: 1;
+}
+
+.virtual-keyboard__observations {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.virtual-keyboard__observations th,
+.virtual-keyboard__observations td {
+  text-align: left;
+  padding: 0.25rem 0.75rem 0.25rem 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+/* Connection state belongs where it is always visible, so the page never shows
+   a number without saying whether it came from the board or a simulation. */
+.hardware-badge { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.live-label { display: inline-block; color: #bbf7d0; background: #14532d; border-radius: .35rem; padding: .4rem .65rem; font-size: .8rem; font-weight: 700; }
+.diagnostic-panel dl { margin: 0; display: grid; grid-template-columns: minmax(9rem, max-content) 1fr; gap: .1rem .9rem; }
+.diagnostic-row { display: contents; }
+.diagnostic-row dt { color: #9ca3af; padding: .3rem 0; }
+.diagnostic-row dd { margin: 0; padding: .3rem 0; overflow-wrap: anywhere; }
+/* A value that needs attention is named, not coloured alone: colour is not
+   readable to everyone and does not survive a screenshot pasted into chat. */
+.diagnostic-row.warn dd { color: #fca5a5; font-weight: 700; }
+.diagnostic-row.warn dd::after { content: ' ⚠'; }
+@media (max-width: 560px) { .diagnostic-panel dl { grid-template-columns: 1fr; } .diagnostic-row dt { padding-bottom: 0; } }
+.status.simulated { background: #713f12; color: #fde68a; }
+
+.pairing-actions { display: flex; gap: .6rem; flex-wrap: wrap; margin: .8rem 0; }
+/* The number has to be readable across a desk while the other hand is on the
+   keyboard, and it is only good for thirty seconds. */
+.passkey { display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap; background: #14532d; border-radius: .6rem; padding: .8rem 1rem; margin-top: .8rem; }
+.passkey-label { color: #bbf7d0; font-size: .85rem; }
+.passkey-value { font-size: 2.4rem; font-weight: 700; letter-spacing: .35rem; color: #f0fdf4; font-variant-numeric: tabular-nums; }
+.passkey-serial { color: #86efac; font-size: .8rem; }
+.passkey-idle { color: #9ca3af; }
+
+/* The home screen is the management surface: status first, then sources, then
+   the next action. Keep simulation/physical context beside the page title so a
+   value is never mistaken for a board observation. */
+.page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
+.page-heading h2 { margin-bottom: .45rem; }
+.context-badge { flex: 0 0 auto; border: 1px solid #854d0e; border-radius: 99px; background: #422006; color: #fde68a; padding: .45rem .75rem; font-size: .8rem; font-weight: 700; }
+.context-badge.live { border-color: #166534; background: #052e16; color: #bbf7d0; }
+.dashboard-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-bottom: 1.5rem; }
+.summary-card { display: flex; min-height: 8rem; flex-direction: column; justify-content: space-between; gap: .35rem; border: 1px solid #374151; border-radius: .75rem; background: #1f2937; padding: 1rem; }
+.summary-label { color: #9ca3af; font-size: .8rem; font-weight: 700; }
+.summary-card strong { color: #f8fafc; font-size: 1.45rem; line-height: 1.2; }
+.summary-detail, .section-hint { color: #9ca3af; font-size: .82rem; }
+.dashboard-section { margin-top: 1.5rem; }
+.section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; }
+.section-heading h3 { margin-bottom: .25rem; }
+.section-heading p { margin-bottom: 0; }
+.dashboard-source-grid, .dashboard-actions { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.dashboard-source-card, .action-card { display: flex; flex-direction: column; min-height: 12rem; margin: 0; padding: 1rem; }
+.dashboard-source-card.connected { border-color: #166534; }
+.source-card-topline { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+.slot-label { color: #7dd3fc; font-size: .8rem; font-weight: 700; }
+.source-state { border-radius: 99px; background: #374151; color: #d1d5db; padding: .25rem .55rem; font-size: .75rem; font-weight: 700; }
+.source-state.connected { background: #14532d; color: #bbf7d0; }
+.dashboard-source-card h4, .action-card h4 { margin: 1rem 0 .35rem; font-size: 1.05rem; }
+.source-card-transport, .source-card-profile, .action-card p { color: #b6c2d9; font-size: .85rem; }
+.source-card-profile { flex: 1; margin-bottom: 1rem; }
+.dashboard-source-card button, .action-card button, .section-heading button { align-self: flex-start; border: 1px solid #4b5563; border-radius: .45rem; background: #111827; color: #e5e7eb; padding: .55rem .75rem; cursor: pointer; }
+.dashboard-source-card button:hover, .action-card button:hover, .section-heading button:hover { border-color: #38bdf8; color: #f0f9ff; }
+.action-card { min-height: 10rem; }
+.action-card p { flex: 1; margin-bottom: 1rem; }
+.empty-state { border: 1px dashed #4b5563; border-radius: .6rem; color: #9ca3af; padding: 1rem; }
+.keymap-destination { color: #bae6fd; font-size: .85rem; font-weight: 700; }
+.keymap-state { color: #9ca3af; font-size: .85rem; }
+.keymap-state.dirty { color: #fde68a; font-weight: 700; }
+.keymap-validation { color: #fecaca; background: #450a0a; border: 1px solid #991b1b; border-radius: .45rem; padding: .55rem .7rem; }
+.keymap-error { color: #fecaca; background: #451a03; border: 1px solid #c2410c; border-radius: .45rem; padding: .55rem .7rem; }
+.keymap-visual-editor { margin-top: 1rem; border: 1px solid #334155; border-radius: .65rem; background: #111827; padding: 1rem; }
+.keymap-visual-editor__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.keymap-visual-editor__heading h4 { margin: 0 0 .35rem; }
+.keymap-visual-editor__heading p { color: #9ca3af; font-size: .82rem; margin: 0; }
+.keymap-capacity { color: #bae6fd; font-size: .8rem; font-weight: 700; white-space: nowrap; }
+.keymap-input-modes { display: flex; gap: .4rem; margin: 1rem 0 .75rem; }
+.keymap-input-modes button { border: 1px solid #475569; border-radius: .4rem; background: #1e293b; color: #cbd5e1; padding: .45rem .7rem; cursor: pointer; }
+.keymap-input-modes button[aria-pressed='true'] { border-color: #38bdf8; background: #0c4a6e; color: #e0f2fe; }
+.keymap-editor-row { display: flex; align-items: stretch; gap: .25rem; margin-bottom: .35rem; overflow-x: auto; padding-bottom: .15rem; }
+.keymap-editor-row__label { flex: 0 0 3rem; align-self: center; color: #64748b; font-size: .7rem; }
+.keymap-editor-key { display: flex; flex: 0 0 3.6rem; min-height: 3.15rem; flex-direction: column; justify-content: space-between; border: 1px solid #475569; border-radius: .35rem; background: #1e293b; color: #e2e8f0; padding: .35rem .4rem; cursor: pointer; text-align: left; }
+.keymap-editor-key:hover, .keymap-editor-key.selected { border-color: #38bdf8; background: #164e63; }
+.keymap-editor-key strong { font-size: .75rem; }
+.keymap-editor-key small { overflow: hidden; color: #94a3b8; font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
+.keymap-editor-key.selected small { color: #bae6fd; }
+.keymap-action-panel { display: flex; align-items: end; flex-wrap: wrap; gap: .8rem; margin-top: 1rem; border-top: 1px solid #334155; padding-top: 1rem; }
+.keymap-action-panel > div { display: flex; min-width: 10rem; flex-direction: column; gap: .25rem; }
+.keymap-action-panel__eyebrow { color: #94a3b8; font-size: .72rem; }
+.keymap-action-panel label { display: flex; flex-direction: column; gap: .25rem; color: #cbd5e1; font-size: .8rem; }
+.keymap-action-panel select { min-width: 12rem; border: 1px solid #475569; border-radius: .35rem; background: #0f172a; color: #f8fafc; padding: .5rem; }
+.keymap-action-panel__checkbox { align-self: center; flex-direction: row !important; align-items: center; }
+.keymap-action-panel button { border: 1px solid #4b5563; border-radius: .4rem; background: #1e293b; color: #e5e7eb; padding: .5rem .7rem; cursor: pointer; }
+@media (max-width: 560px) { .keymap-visual-editor__heading { flex-direction: column; } .keymap-action-panel { align-items: stretch; flex-direction: column; } .keymap-action-panel > div { min-width: 0; } }
+@media (max-width: 700px) { .dashboard-summary { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .page-heading, .section-heading { flex-direction: column; } .context-badge { align-self: flex-start; } }

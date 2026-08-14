@@ -1,0 +1,9 @@
+/target/
+/artifacts/
+/ui/node_modules/
+/ui/dist/
+/ui/playwright-report/
+/ui/test-results/
+/ui/*.tsbuildinfo
+__pycache__/
+*.pyc

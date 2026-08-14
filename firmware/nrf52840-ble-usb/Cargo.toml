@@ -1,0 +1,203 @@
+[package]
+name = "ukf-nrf52840-ble-usb"
+version = "0.9.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "nRF52840 BLE-input to USB-keyboard firmware adapter."
+build = "build.rs"
+
+[features]
+default = []
+hardware = [
+    "dep:cortex-m",
+    "cortex-m/critical-section-single-core",
+    "dep:cortex-m-rt",
+    "dep:embassy-executor",
+    "dep:embassy-futures",
+    "dep:embassy-nrf",
+    "dep:embassy-usb",
+    "dep:panic-halt",
+    "dep:usbd-hid",
+]
+xiao-usb-hid-hardware = [
+    "dep:cortex-m",
+    "cortex-m/critical-section-single-core",
+    "dep:cortex-m-rt",
+    # The UF2 bootloader does not promise a particular VTOR on hand-off, and
+    # this binary has no SoftDevice to relocate it. Place it explicitly.
+    "cortex-m-rt/set-vtor",
+    "dep:embassy-executor",
+    "dep:embassy-futures",
+    "dep:embassy-nrf",
+    # GPREGRET is the UF2 bootloader's hand-off register and no HAL wrapper
+    # exposes it; the software reset writes it through the re-exported PAC.
+    "embassy-nrf/unstable-pac",
+    "dep:embassy-time",
+    "dep:embassy-usb",
+    "dep:usbd-hid",
+]
+s140-central = ["dep:nrf-softdevice"]
+s140-hardware = [
+    "s140-central",
+    "dep:cortex-m",
+    "dep:cortex-m-rt",
+    # `sd_softdevice_enable` adopts the application vector table that VTOR
+    # points at when it is called, so the hand-off must not be left implicit.
+    "cortex-m-rt/set-vtor",
+    "dep:embassy-executor",
+    "dep:embassy-futures",
+    "dep:embassy-sync",
+    "dep:nrf-usbd",
+    "dep:panic-halt",
+    "dep:usb-device",
+    "dep:usbd-hid",
+]
+s140-usb-probe-hardware = [
+    "s140-central",
+    "dep:cortex-m",
+    "dep:cortex-m-rt",
+    "dep:embassy-executor",
+    "dep:embassy-futures",
+    "dep:embassy-sync",
+    "dep:nrf-usbd",
+    "dep:usb-device",
+    "dep:usbd-hid",
+]
+s140-usb-probe-errata-hardware = ["s140-usb-probe-hardware"]
+s140-ready-probe-hardware = ["s140-usb-probe-errata-hardware"]
+s140-ready-detected-order-hardware = ["s140-ready-probe-hardware"]
+s140-power-probe-hardware = [
+    "s140-central",
+    "dep:cortex-m",
+    "dep:cortex-m-rt",
+    "dep:embassy-executor",
+    "dep:embassy-futures",
+    "dep:embassy-sync",
+]
+usb-probe-hardware = [
+    "dep:cortex-m",
+    "cortex-m/critical-section-single-core",
+    "dep:cortex-m-rt",
+    "dep:nrf-usbd",
+    "dep:panic-halt",
+    "dep:usb-device",
+    "dep:usbd-hid",
+]
+entry-probe-hardware = ["dep:cortex-m-rt"]
+# BLE central on the SoftDevice Controller linked as a library. Deliberately
+# does not enable `cortex-m/critical-section-single-core`: MPSL supplies the
+# only critical-section implementation that is safe while the radio runs, and
+# two implementations would not link.
+xiao-ble-hardware = [
+    "dep:cortex-m",
+    "dep:cortex-m-rt",
+    "cortex-m-rt/set-vtor",
+    "dep:embassy-executor",
+    "dep:embassy-futures",
+    "dep:embassy-nrf",
+    "embassy-nrf/unstable-pac",
+    "dep:embassy-sync",
+    "dep:embassy-time",
+    "dep:embassy-usb",
+    "dep:usbd-hid",
+    "dep:embedded-io",
+    "dep:nrf-mpsl",
+    "nrf-mpsl/critical-section-impl",
+    "dep:nrf-sdc",
+    "dep:static_cell",
+    "dep:trouble-host",
+    "dep:bt-hci",
+]
+
+[dependencies]
+ukf-core = { path = "../../crates/ukf-core" }
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
+cortex-m = { version = "0.7.8", optional = true }
+cortex-m-rt = { version = "0.7.6", optional = true }
+embassy-executor = { version = "0.10.0", optional = true, features = ["platform-cortex-m", "executor-thread"] }
+embassy-futures = { version = "0.1.2", optional = true }
+embassy-nrf = { version = "0.11.0", optional = true, features = ["nrf52840", "time-driver-rtc1", "gpiote"] }
+embassy-usb = { version = "0.6.0", optional = true }
+panic-halt = { version = "1.0.0", optional = true }
+usbd-hid = { version = "0.10.0", optional = true }
+nrf-softdevice = { version = "0.1.0", optional = true, features = [
+    "ble-central",
+    "ble-gatt-client",
+    "critical-section-impl",
+    "nrf52840",
+    "s140",
+] }
+embassy-sync = { version = "0.5.0", optional = true }
+embassy-time = { version = "0.5.1", optional = true }
+nrf-usbd = { version = "0.3.0", optional = true }
+usb-device = { version = "0.3.2", optional = true }
+# Pinned to the same upstream revision the rmk keyboard firmware ships, which
+# is the only combination that actually type-checks today. The published
+# nrf-sdc 0.3.0 is a year old, requires embassy-nrf 0.7, and implements
+# bt-hci 0.4's `Controller` trait, while trouble-host 0.7 requires bt-hci 0.9 —
+# those two cannot be connected. Upstream `main` is 0.4.0 on embassy-nrf 0.11
+# and bt-hci 0.9. Move to crates.io once 0.4.0 is published.
+nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", optional = true, features = ["nrf52840"] }
+nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "f54b6389ffa2750d4d3a4f5435660cb66b47e51a", optional = true, features = ["nrf52840", "central", "peripheral"] }
+# `legacy-pairing` is not implied by `security`: without it the host does
+# Secure Connections only. Some BLE 4.x-era keyboards require LE Legacy
+# passkey entry, so this feature remains explicit for interoperability.
+trouble-host = { version = "0.7.0", optional = true, features = ["scan", "security", "legacy-pairing"] }
+# Named directly because `Scanner::scan` and `Central::connect` carry `where`
+# clauses over `bt_hci`'s command traits, and a generic radio task has to repeat
+# them. Must stay on the version `trouble-host` resolves to.
+bt-hci = { version = "0.9.0", optional = true }
+# `bt_hci::controller::Controller` is declared over `embedded_io::ErrorType`,
+# so anything that wraps a controller has to name that trait itself. Kept on the
+# version `bt-hci` resolves to.
+embedded-io = { version = "0.7.1", optional = true }
+static_cell = { version = "2.1.1", optional = true }
+
+[[bin]]
+name = "ukf-nrf52840-ble-usb"
+path = "src/bin/firmware.rs"
+required-features = ["hardware"]
+
+[[bin]]
+name = "ukf-xiao-s140-bridge"
+path = "src/bin/xiao_s140_bridge.rs"
+required-features = ["s140-hardware"]
+
+[[bin]]
+name = "ukf-xiao-usb-hid"
+path = "src/bin/xiao_usb_hid.rs"
+required-features = ["xiao-usb-hid-hardware"]
+
+[[bin]]
+name = "ukf-xiao-ble-probe"
+path = "src/bin/xiao_ble_probe.rs"
+required-features = ["xiao-ble-hardware"]
+
+[[bin]]
+name = "ukf-xiao-usb-probe"
+path = "src/bin/usb_probe.rs"
+required-features = ["usb-probe-hardware"]
+
+[[bin]]
+name = "ukf-xiao-entry-probe"
+path = "src/bin/xiao_entry_probe.rs"
+required-features = ["entry-probe-hardware"]
+
+[[bin]]
+name = "ukf-xiao-s140-usb-probe"
+path = "src/bin/xiao_s140_usb_probe.rs"
+required-features = ["s140-usb-probe-hardware"]
+
+[[bin]]
+name = "ukf-xiao-s140-power-probe"
+path = "src/bin/xiao_s140_power_probe.rs"
+required-features = ["s140-power-probe-hardware"]
+
+[lints.rust]
+# `xiao_s140_bridge` must bind the raw USBD register block and borrow S140's
+# advertisement buffer. The library and generic firmware binary retain their
+# explicit `#![forbid(unsafe_code)]` boundaries.
+unsafe_code = "allow"
+missing_docs = "warn"
