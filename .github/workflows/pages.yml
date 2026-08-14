@@ -32,7 +32,7 @@ jobs:
         working-directory: ui
       - run: npm run build -- --base "${{ steps.pages.outputs.base_path }}/"
         working-directory: ui
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: ui/dist
 
