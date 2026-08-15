@@ -63,8 +63,8 @@ use ukf_nrf52840_ble_usb::config_hid::{
     CONFIG_CONTROL_BUFFER_LEN, CONFIG_REPORT_DESCRIPTOR, ConfigRequest, classify_feature_report,
 };
 use ukf_nrf52840_ble_usb::config_transfer::{
-    ConfigTransfer, TARGET_BOND_MANAGEMENT, TARGET_KEYMAP, TARGET_PROFILE, TARGET_SOURCE_PROFILE,
-    TransferError,
+    ConfigTransfer, TARGET_BOND_MANAGEMENT, TARGET_KEYMAP, TARGET_PROFILE, TARGET_SOURCE_KEYMAP,
+    TARGET_SOURCE_PROFILE, TransferError,
 };
 use ukf_nrf52840_ble_usb::configuration_updates::ConfigurationUpdates;
 use ukf_nrf52840_ble_usb::diagnostics_report::{
@@ -72,8 +72,10 @@ use ukf_nrf52840_ble_usb::diagnostics_report::{
 };
 use ukf_nrf52840_ble_usb::hogp::{HogpCentral, ReportCharacteristic};
 use ukf_nrf52840_ble_usb::keymap_store::{
-    KEYMAP_RECORD_LEN, KeymapRecordError, decode_keymap_record, encode_keymap_payload,
-    encode_keymap_record,
+    KEYMAP_RECORD_LEN, KEYMAP_STORAGE_LEN, KeymapRecordError, SourceKeymapPayloadError,
+    decode_keymap_record, decode_source_keymap_payload, decode_source_keymap_record,
+    encode_keymap_payload, encode_keymap_record, encode_source_keymap_payload,
+    encode_source_keymap_record,
 };
 use ukf_nrf52840_ble_usb::keymap_store::{KeymapPayloadError, decode_keymap_payload};
 use ukf_nrf52840_ble_usb::multi_link::{LinkWorkerId, MAX_ACTIVE_BLE_LINKS, MultiLinkSet};
@@ -223,8 +225,11 @@ static RESET_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// round trip: name what you want, then read.
 static PANIC_CHUNK: AtomicU8 = AtomicU8::new(0xff);
 static KEYMAP_CHUNK: AtomicU8 = AtomicU8::new(0xff);
+static SOURCE_KEYMAP_CHUNK: AtomicU8 = AtomicU8::new(0xff);
 /// Source slot returned by the next source diagnostics read.
 static SOURCE_SELECTOR: AtomicU8 = AtomicU8::new(0);
+/// Source slot owning the next source-keymap diagnostics chunk.
+static SOURCE_KEYMAP_SELECTOR: AtomicU8 = AtomicU8::new(0);
 
 /// Whether a pairing from a previous boot was found in flash at start-up.
 static BOND_LOADED: AtomicBool = AtomicBool::new(false);
@@ -582,6 +587,7 @@ static CONFIG_TRANSFER: BlockingMutex<CriticalSectionRawMutex, RefCell<ConfigTra
 enum RadioControl {
     Profile(StoredProfile),
     Keymap(Keymap),
+    SourceKeymap { slot: u8, keymap: Keymap },
     Bond(BondManagementRequest),
 }
 
@@ -1008,6 +1014,17 @@ fn keymap_record_error_code(error: &KeymapRecordError) -> u8 {
         KeymapRecordError::Crc { .. } => 5,
         KeymapRecordError::PayloadLength(_) => 6,
         KeymapRecordError::Payload(_) => 7,
+        KeymapRecordError::SourceSlot(_) => 8,
+    }
+}
+
+/// Converts a source-keymap payload rejection into a stable diagnostics reason.
+fn source_keymap_payload_error_code(error: &SourceKeymapPayloadError) -> u8 {
+    match error {
+        SourceKeymapPayloadError::Length(_) => 1,
+        SourceKeymapPayloadError::Version(_) => 2,
+        SourceKeymapPayloadError::SourceSlot(_) => 3,
+        SourceKeymapPayloadError::Payload(_) => 4,
     }
 }
 
@@ -1398,31 +1415,79 @@ fn publish_profile(profile: StoredProfile, stored: bool) {
     PROFILE_STORED.store(stored, Ordering::Release);
 }
 
-/// Publishes the keymap that new report pipelines should start with.
+/// Publishes the legacy keymap to every source for backwards compatibility.
 fn publish_keymap(keymap: Keymap, stored: bool) {
-    ACTIVE_KEYMAP.lock(|cell| *cell.borrow_mut() = keymap);
+    ACTIVE_KEYMAPS.lock(|cell| *cell.borrow_mut() = [keymap; SOURCE_SLOT_COUNT]);
     KEYMAP_STORED.store(stored, Ordering::Release);
 }
 
-/// Returns the keymap last loaded from or applied to the bridge.
-fn active_keymap() -> Keymap {
-    ACTIVE_KEYMAP.lock(|cell| *cell.borrow())
+/// Publishes one source-specific keymap without changing persistence state.
+fn publish_source_keymap(slot: u8, keymap: Keymap) {
+    ACTIVE_KEYMAPS.lock(|cell| {
+        if let Some(current) = cell.borrow_mut().get_mut(usize::from(slot)) {
+            *current = keymap;
+        }
+    });
 }
 
-/// Reads the dedicated keymap page before the radio starts scanning.
+/// Returns every keymap currently used by the report pipeline.
+fn active_keymaps() -> [Keymap; SOURCE_SLOT_COUNT] {
+    ACTIVE_KEYMAPS.lock(|cell| *cell.borrow())
+}
+
+/// Returns the keymap last loaded from or applied to one source slot.
+fn active_source_keymap(slot: u8) -> Keymap {
+    active_keymaps()
+        .get(usize::from(slot))
+        .copied()
+        .unwrap_or(Keymap::US_JIS)
+}
+
+/// Returns the legacy slot-zero keymap used by target 5 and old callers.
+fn active_keymap() -> Keymap {
+    active_source_keymap(0)
+}
+
+/// Reads the keymap page before the radio starts scanning.
+///
+/// Record zero is the legacy target-5 fallback. Records one through five are
+/// source-specific overrides. A missing override inherits that fallback, so a
+/// board upgraded from the single-map firmware keeps its existing behavior.
 fn load_keymap(flash: &mut nrf_sdc::mpsl::Flash<'_>) {
-    let mut record = [0; KEYMAP_RECORD_LEN];
-    match flash.read(KEYMAP_STORAGE_OFFSET, &mut record) {
-        Ok(()) => match decode_keymap_record(&record) {
-            Ok(keymap) => publish_keymap(keymap, true),
-            Err(KeymapRecordError::Empty) => publish_keymap(Keymap::US_JIS, false),
-            Err(error) => {
-                let code = keymap_record_error_code(&error);
-                KEYMAP_FLASH_ERROR.store(0x40 | code, Ordering::Relaxed);
-                LAST_ERROR.store(PHASE_KEYMAP | code, Ordering::Relaxed);
-                publish_keymap(Keymap::US_JIS, false);
+    let mut page = [0; KEYMAP_STORAGE_LEN];
+    match flash.read(KEYMAP_STORAGE_OFFSET, &mut page) {
+        Ok(()) => {
+            let mut keymaps = [Keymap::US_JIS; SOURCE_SLOT_COUNT];
+            match decode_keymap_record(&page[..KEYMAP_RECORD_LEN]) {
+                Ok(keymap) => {
+                    keymaps = [keymap; SOURCE_SLOT_COUNT];
+                    KEYMAP_STORED.store(true, Ordering::Release);
+                }
+                Err(KeymapRecordError::Empty) => {}
+                Err(error) => {
+                    let code = keymap_record_error_code(&error);
+                    KEYMAP_FLASH_ERROR.store(0x40 | code, Ordering::Relaxed);
+                    LAST_ERROR.store(PHASE_KEYMAP | code, Ordering::Relaxed);
+                }
             }
-        },
+            for (slot, active_keymap) in keymaps.iter_mut().enumerate() {
+                let start = KEYMAP_RECORD_LEN * (slot + 1);
+                match decode_source_keymap_record(&page[start..start + KEYMAP_RECORD_LEN]) {
+                    Ok((record_slot, keymap)) if usize::from(record_slot) == slot => {
+                        *active_keymap = keymap;
+                        KEYMAP_STORED.store(true, Ordering::Release);
+                    }
+                    Ok((_record_slot, _keymap)) => {}
+                    Err(KeymapRecordError::Empty) => {}
+                    Err(error) => {
+                        let code = keymap_record_error_code(&error);
+                        KEYMAP_FLASH_ERROR.store(0x40 | code, Ordering::Relaxed);
+                        LAST_ERROR.store(PHASE_KEYMAP | code, Ordering::Relaxed);
+                    }
+                }
+            }
+            ACTIVE_KEYMAPS.lock(|cell| *cell.borrow_mut() = keymaps);
+        }
         Err(error) => {
             let code = flash_error_code(&error, &KEYMAP_FLASH_ERRNO);
             KEYMAP_FLASH_ERROR.store(0x30 | code, Ordering::Relaxed);
@@ -1435,6 +1500,18 @@ fn load_keymap(flash: &mut nrf_sdc::mpsl::Flash<'_>) {
 /// Queues a validated keymap for the radio owner to apply and persist.
 fn queue_keymap_write(keymap: Keymap) -> OutResponse {
     match RADIO_CONTROL_REQUESTS.try_send(RadioControl::Keymap(keymap)) {
+        Ok(()) => OutResponse::Accepted,
+        Err(_) => {
+            KEYMAP_FLASH_ERROR.store(0x50 | 1, Ordering::Relaxed);
+            LAST_ERROR.store(PHASE_KEYMAP | 8, Ordering::Relaxed);
+            OutResponse::Rejected
+        }
+    }
+}
+
+/// Queues one source-slot keymap for the radio owner to apply and persist.
+fn queue_source_keymap_write(slot: u8, keymap: Keymap) -> OutResponse {
+    match RADIO_CONTROL_REQUESTS.try_send(RadioControl::SourceKeymap { slot, keymap }) {
         Ok(()) => OutResponse::Accepted,
         Err(_) => {
             KEYMAP_FLASH_ERROR.store(0x50 | 1, Ordering::Relaxed);
@@ -1544,12 +1621,19 @@ static PENDING_BOND: BlockingMutex<CriticalSectionRawMutex, RefCell<bool>> =
 /// quiet point before touching MPSL flash.
 static PENDING_PROFILE: BlockingMutex<CriticalSectionRawMutex, RefCell<PendingProfile>> =
     BlockingMutex::new(RefCell::new(None));
-/// The keymap loaded at boot or most recently applied by the report task.
-static ACTIVE_KEYMAP: BlockingMutex<CriticalSectionRawMutex, RefCell<Keymap>> =
-    BlockingMutex::new(RefCell::new(Keymap::US_JIS));
-/// A keymap applied in RAM but waiting for a radio-quiet flash boundary.
+/// The keymaps loaded at boot or most recently applied by the report task.
+static ACTIVE_KEYMAPS: BlockingMutex<
+    CriticalSectionRawMutex,
+    RefCell<[Keymap; SOURCE_SLOT_COUNT]>,
+> = BlockingMutex::new(RefCell::new([Keymap::US_JIS; SOURCE_SLOT_COUNT]));
+/// A legacy global keymap applied in RAM but waiting for a radio-quiet flash boundary.
 static PENDING_KEYMAP: BlockingMutex<CriticalSectionRawMutex, RefCell<Option<Keymap>>> =
     BlockingMutex::new(RefCell::new(None));
+/// Source-specific keymaps applied in RAM but waiting for a quiet boundary.
+static PENDING_SOURCE_KEYMAPS: BlockingMutex<
+    CriticalSectionRawMutex,
+    RefCell<[Option<Keymap>; SOURCE_SLOT_COUNT]>,
+> = BlockingMutex::new(RefCell::new([None; SOURCE_SLOT_COUNT]));
 /// Latest configuration values waiting for the report task to apply.
 ///
 /// This is deliberately separate from [`RADIO_EVENTS`]. Disconnects and HID
@@ -1747,6 +1831,20 @@ async fn stage_pending_keymap(keymap: Keymap) {
     CONFIG_APPLY_READY.signal(());
 }
 
+/// Applies one source-specific keymap in RAM and queues its record for quiet persistence.
+async fn stage_pending_source_keymap(slot: u8, keymap: Keymap) {
+    PENDING_SOURCE_KEYMAPS.lock(|cell| {
+        if let Some(pending) = cell.borrow_mut().get_mut(usize::from(slot)) {
+            *pending = Some(keymap);
+        }
+    });
+    PENDING_CONFIGURATION.lock(|cell| {
+        cell.borrow_mut().stage_source_keymap(slot, keymap);
+    });
+    KEYMAP_STORED.store(false, Ordering::Release);
+    CONFIG_APPLY_READY.signal(());
+}
+
 /// Applies the latest configuration values without consuming radio events.
 ///
 /// The values are coalesced before this function runs. That is safe because a
@@ -1773,7 +1871,28 @@ fn apply_pending_configuration(pipeline: &mut ReportPipeline, pending: &mut Opti
         let mut sink = PendingUsbReport(pending);
         match pipeline.set_keymap(keymap, &mut sink) {
             Ok(()) => {
-                publish_keymap(keymap, false);
+                ACTIVE_KEYMAPS.lock(|cell| *cell.borrow_mut() = [keymap; SOURCE_SLOT_COUNT]);
+                KEYMAP_APPLY_ERROR.store(0, Ordering::Relaxed);
+            }
+            Err(error) => {
+                let code = pipeline_refusal_code(&error);
+                KEYMAP_APPLY_ERROR.store(code, Ordering::Relaxed);
+                LAST_ERROR.store(PHASE_KEYMAP | code, Ordering::Relaxed);
+            }
+        }
+    }
+
+    for slot in 0..SOURCE_SLOT_COUNT {
+        let slot = slot as u8;
+        let Some(keymap) =
+            PENDING_CONFIGURATION.lock(|cell| cell.borrow_mut().take_source_keymap(slot))
+        else {
+            continue;
+        };
+        let mut sink = PendingUsbReport(pending);
+        match pipeline.set_source_keymap(SourceId(slot), keymap, &mut sink) {
+            Ok(()) => {
+                publish_source_keymap(slot, keymap);
                 KEYMAP_APPLY_ERROR.store(0, Ordering::Relaxed);
             }
             Err(error) => {
@@ -1839,14 +1958,38 @@ async fn flush_pending_profile(flash: &mut nrf_sdc::mpsl::Flash<'_>) {
 
 /// Writes the stashed keymap, if there is one, at a radio-quiet boundary.
 async fn flush_pending_keymap(flash: &mut nrf_sdc::mpsl::Flash<'_>) {
-    let Some(keymap) = PENDING_KEYMAP.lock(|cell| cell.borrow_mut().take()) else {
+    let global = PENDING_KEYMAP.lock(|cell| cell.borrow_mut().take());
+    let source_updates = PENDING_SOURCE_KEYMAPS
+        .lock(|cell| core::mem::replace(&mut *cell.borrow_mut(), [None; SOURCE_SLOT_COUNT]));
+    if global.is_none() && source_updates.iter().all(Option::is_none) {
         return;
-    };
-    if persist_keymap(flash, &keymap).await {
+    }
+
+    let mut keymaps = active_keymaps();
+    if let Some(keymap) = global {
+        keymaps = [keymap; SOURCE_SLOT_COUNT];
+    }
+    for (slot, keymap) in source_updates.iter().enumerate() {
+        if let Some(keymap) = keymap {
+            keymaps[slot] = *keymap;
+        }
+    }
+
+    if persist_keymaps(flash, &keymaps).await {
         KEYMAP_STORED.store(true, Ordering::Release);
     } else {
-        PENDING_KEYMAP.lock(|cell| {
-            *cell.borrow_mut() = Some(keymap);
+        if global.is_some() {
+            PENDING_KEYMAP.lock(|cell| {
+                *cell.borrow_mut() = global;
+            });
+        }
+        PENDING_SOURCE_KEYMAPS.lock(|cell| {
+            let mut pending = cell.borrow_mut();
+            for (slot, keymap) in source_updates.iter().enumerate() {
+                if keymap.is_some() {
+                    pending[slot] = *keymap;
+                }
+            }
         });
     }
 }
@@ -1908,12 +2051,27 @@ async fn persist_stored_profile(
     false
 }
 
-/// Writes one keymap record to its dedicated page through the MPSL flash path.
-async fn persist_keymap(flash: &mut nrf_sdc::mpsl::Flash<'_>, keymap: &Keymap) -> bool {
+/// Rewrites the legacy fallback and all source-slot keymap records together.
+///
+/// The page is erased only at the radio-owned quiet boundary. Keeping the
+/// legacy record at offset zero lets older firmware recover its single global
+/// keymap, while the following five records carry the source-specific maps.
+async fn persist_keymaps(
+    flash: &mut nrf_sdc::mpsl::Flash<'_>,
+    keymaps: &[Keymap; SOURCE_SLOT_COUNT],
+) -> bool {
     #[repr(align(4))]
-    struct Aligned([u8; KEYMAP_RECORD_LEN]);
+    struct Aligned([u8; KEYMAP_STORAGE_LEN]);
 
-    let record = Aligned(encode_keymap_record(keymap));
+    let mut page = [0; KEYMAP_STORAGE_LEN];
+    page[..KEYMAP_RECORD_LEN].copy_from_slice(&encode_keymap_record(&keymaps[0]));
+    for (slot, keymap) in keymaps.iter().enumerate() {
+        let record = encode_source_keymap_record(slot as u8, keymap)
+            .expect("source keymap storage slot is bounded by SOURCE_SLOT_COUNT");
+        let start = KEYMAP_RECORD_LEN * (slot + 1);
+        page[start..start + KEYMAP_RECORD_LEN].copy_from_slice(&record);
+    }
+    let page = Aligned(page);
     for attempt in 0..BOND_WRITE_ATTEMPTS {
         if attempt > 0 {
             Timer::after(BOND_WRITE_RETRY_DELAY).await;
@@ -1934,7 +2092,7 @@ async fn persist_keymap(flash: &mut nrf_sdc::mpsl::Flash<'_>, keymap: &Keymap) -
                 continue;
             }
         }
-        match flash.write(KEYMAP_STORAGE_OFFSET, &record.0).await {
+        match flash.write(KEYMAP_STORAGE_OFFSET, &page.0).await {
             Ok(()) => {
                 KEYMAP_FLASH_ERROR.store(0, Ordering::Relaxed);
                 return true;
@@ -1964,6 +2122,9 @@ async fn process_radio_control_requests() {
         match request {
             RadioControl::Profile(profile) => stage_pending_profile(profile).await,
             RadioControl::Keymap(keymap) => stage_pending_keymap(keymap).await,
+            RadioControl::SourceKeymap { slot, keymap } => {
+                stage_pending_source_keymap(slot, keymap).await
+            }
             RadioControl::Bond(request) => {
                 let _ = stage_bond_management(request);
             }
@@ -2436,6 +2597,9 @@ where
                     match control {
                         RadioControl::Profile(profile) => stage_pending_profile(profile).await,
                         RadioControl::Keymap(keymap) => stage_pending_keymap(keymap).await,
+                        RadioControl::SourceKeymap { slot, keymap } => {
+                            stage_pending_source_keymap(slot, keymap).await
+                        }
                         RadioControl::Bond(request) => {
                             let _ = stage_bond_management(request);
                         }
@@ -2514,6 +2678,9 @@ async fn wait_for_link_connect_boundary(worker: LinkWorkerId, slot: u8) {
             Either::Second(control) => match control {
                 RadioControl::Profile(profile) => stage_pending_profile(profile).await,
                 RadioControl::Keymap(keymap) => stage_pending_keymap(keymap).await,
+                RadioControl::SourceKeymap { slot, keymap } => {
+                    stage_pending_source_keymap(slot, keymap).await
+                }
                 RadioControl::Bond(request) => {
                     let _ = stage_bond_management(request);
                 }
@@ -2559,6 +2726,9 @@ where
                 Either::Second(control) => match control {
                     RadioControl::Profile(profile) => stage_pending_profile(profile).await,
                     RadioControl::Keymap(keymap) => stage_pending_keymap(keymap).await,
+                    RadioControl::SourceKeymap { slot, keymap } => {
+                        stage_pending_source_keymap(slot, keymap).await
+                    }
                     RadioControl::Bond(request) => {
                         let _ = stage_bond_management(request);
                     }
@@ -2600,6 +2770,9 @@ where
                                     stage_pending_profile(profile).await
                                 }
                                 RadioControl::Keymap(keymap) => stage_pending_keymap(keymap).await,
+                                RadioControl::SourceKeymap { slot, keymap } => {
+                                    stage_pending_source_keymap(slot, keymap).await
+                                }
                                 RadioControl::Bond(request) => {
                                     let _ = stage_bond_management(request);
                                 }
@@ -2856,7 +3029,21 @@ impl RequestHandler for ConfigRequestHandler {
             return None;
         }
         let selected_keymap = KEYMAP_CHUNK.swap(0xff, Ordering::AcqRel);
-        let report = if selected_keymap != 0xff {
+        let selected_source_keymap = SOURCE_KEYMAP_CHUNK.swap(0xff, Ordering::AcqRel);
+        let report = if selected_source_keymap != 0xff {
+            let slot = SOURCE_KEYMAP_SELECTOR.load(Ordering::Acquire);
+            let payload = encode_source_keymap_payload(slot, &active_source_keymap(slot));
+            payload
+                .ok()
+                .and_then(|payload| {
+                    diagnostics_report::encode_source_keymap_chunk(
+                        payload.as_slice(),
+                        slot,
+                        selected_source_keymap,
+                    )
+                })
+                .unwrap_or_else(diagnostics_snapshot)
+        } else if selected_keymap != 0xff {
             let payload = encode_keymap_payload(&active_keymap());
             diagnostics_report::encode_keymap_chunk(payload.as_slice(), selected_keymap)
                 .unwrap_or_else(diagnostics_snapshot)
@@ -2934,11 +3121,13 @@ impl RequestHandler for ConfigRequestHandler {
             }
             ConfigRequest::SelectPanicChunk(chunk) => {
                 KEYMAP_CHUNK.store(0xff, Ordering::Release);
+                SOURCE_KEYMAP_CHUNK.store(0xff, Ordering::Release);
                 PANIC_CHUNK.store(chunk, Ordering::Release);
                 OutResponse::Accepted
             }
             ConfigRequest::SelectSource(slot) => {
                 KEYMAP_CHUNK.store(0xff, Ordering::Release);
+                SOURCE_KEYMAP_CHUNK.store(0xff, Ordering::Release);
                 SOURCE_SELECTOR.store(slot, Ordering::Release);
                 PANIC_CHUNK.store(SELECT_SOURCE, Ordering::Release);
                 OutResponse::Accepted
@@ -2948,9 +3137,17 @@ impl RequestHandler for ConfigRequestHandler {
                     OutResponse::Rejected
                 } else {
                     PANIC_CHUNK.store(0xff, Ordering::Release);
+                    SOURCE_KEYMAP_CHUNK.store(0xff, Ordering::Release);
                     KEYMAP_CHUNK.store(chunk, Ordering::Release);
                     OutResponse::Accepted
                 }
+            }
+            ConfigRequest::SelectSourceKeymapChunk { slot, chunk } => {
+                PANIC_CHUNK.store(0xff, Ordering::Release);
+                KEYMAP_CHUNK.store(0xff, Ordering::Release);
+                SOURCE_KEYMAP_SELECTOR.store(slot, Ordering::Release);
+                SOURCE_KEYMAP_CHUNK.store(chunk, Ordering::Release);
+                OutResponse::Accepted
             }
             ConfigRequest::WriteBegin {
                 target,
@@ -3052,6 +3249,38 @@ impl RequestHandler for ConfigRequestHandler {
                 target,
                 total_len,
                 payload_crc,
+            } if target == TARGET_SOURCE_KEYMAP => {
+                let result = CONFIG_TRANSFER.lock(|cell| {
+                    cell.borrow_mut()
+                        .commit(target, total_len, payload_crc)
+                        .map(decode_source_keymap_payload)
+                });
+                match result {
+                    Ok(Ok((slot, keymap)))
+                        if is_runtime_source_slot(slot)
+                            && (slot == ukf_nrf52840_ble_usb::VIRTUAL_SOURCE.0
+                                || registered_bond(usize::from(slot)).is_some()) =>
+                    {
+                        queue_source_keymap_write(slot, keymap)
+                    }
+                    Ok(Ok((_slot, _keymap))) => {
+                        KEYMAP_APPLY_ERROR.store(5, Ordering::Relaxed);
+                        LAST_ERROR.store(PHASE_KEYMAP | 5, Ordering::Relaxed);
+                        OutResponse::Rejected
+                    }
+                    Ok(Err(error)) => {
+                        let code = source_keymap_payload_error_code(&error);
+                        KEYMAP_APPLY_ERROR.store(code, Ordering::Relaxed);
+                        LAST_ERROR.store(PHASE_KEYMAP | code, Ordering::Relaxed);
+                        OutResponse::Rejected
+                    }
+                    Err(error) => transfer_response(Err(error)),
+                }
+            }
+            ConfigRequest::WriteCommit {
+                target,
+                total_len,
+                payload_crc,
             } if target == TARGET_BOND_MANAGEMENT => {
                 let result = CONFIG_TRANSFER.lock(|cell| {
                     cell.borrow_mut()
@@ -3140,7 +3369,8 @@ async fn main(spawner: Spawner) {
         skip_wait_lfclk_started: mpsl::raw::MPSL_DEFAULT_SKIP_WAIT_LFCLK_STARTED != 0,
     };
 
-    // Timeslots have to be declared up front. `new` asks for none, so the
+    // Timeslots have to be declared up front. `mpsl_timeslot_session_open` asks
+    // for none, so the
     // first `mpsl_timeslot_session_open` — which is how the flash driver gets
     // to run at all — came back ENOMEM, and storing the pairing failed every
     // time. That read as "the radio is too busy while connected", which it was

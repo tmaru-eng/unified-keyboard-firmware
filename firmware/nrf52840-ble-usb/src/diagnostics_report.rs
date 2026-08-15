@@ -1,7 +1,7 @@
 //! Host-testable status report for the configuration HID interface.
 
 use crate::config_transfer::TransferState;
-use crate::keymap_store::KEYMAP_PAYLOAD_MAX_LEN;
+use crate::keymap_store::{KEYMAP_PAYLOAD_MAX_LEN, SOURCE_KEYMAP_PAYLOAD_MAX_LEN};
 use crate::uf2_reset::{CONFIG_PROTOCOL_VERSION, crc32_ieee};
 use ukf_core::{
     BridgeProfile, InputTransport, SOURCE_NAME_LEN, SOURCE_SLOT_COUNT, SourceIdentity, SourceName,
@@ -83,6 +83,12 @@ pub const KEYMAP_CHUNK_DATA_LEN: usize = 21;
 /// Maximum number of keymap diagnostics blocks for the fixed payload limit.
 pub const KEYMAP_CHUNK_COUNT_MAX: u8 = KEYMAP_PAYLOAD_MAX_LEN.div_ceil(KEYMAP_CHUNK_DATA_LEN) as u8;
 const KEYMAP_REPORT_VERSION: u8 = 1;
+/// Bytes of a source-slot payload carried by one version-2 block.
+pub const SOURCE_KEYMAP_CHUNK_DATA_LEN: usize = 20;
+/// Maximum number of source-slot keymap blocks.
+pub const SOURCE_KEYMAP_CHUNK_COUNT_MAX: u8 =
+    SOURCE_KEYMAP_PAYLOAD_MAX_LEN.div_ceil(SOURCE_KEYMAP_CHUNK_DATA_LEN) as u8;
+const SOURCE_KEYMAP_REPORT_VERSION: u8 = 2;
 
 const fn decimal_byte(value: &[u8]) -> u8 {
     let mut result = 0;
@@ -346,6 +352,40 @@ pub fn encode_keymap_chunk(
     bytes[4] = chunk_count as u8;
     bytes[5..7].copy_from_slice(&(payload.len() as u16).to_le_bytes());
     bytes[7..7 + end - start].copy_from_slice(&payload[start..end]);
+    let crc = crc32_ieee(&bytes[..28]);
+    bytes[28..].copy_from_slice(&crc.to_le_bytes());
+    Some(bytes)
+}
+
+/// Encodes one selected chunk of a source-slot keymap payload.
+pub fn encode_source_keymap_chunk(
+    payload: &[u8],
+    slot: u8,
+    chunk_index: u8,
+) -> Option<[u8; DIAGNOSTICS_REPORT_LEN]> {
+    if usize::from(slot) >= SOURCE_SLOT_COUNT
+        || payload.is_empty()
+        || payload.len() > SOURCE_KEYMAP_PAYLOAD_MAX_LEN
+    {
+        return None;
+    }
+    let chunk_count = payload.len().div_ceil(SOURCE_KEYMAP_CHUNK_DATA_LEN);
+    if usize::from(chunk_index) >= chunk_count
+        || chunk_count > usize::from(SOURCE_KEYMAP_CHUNK_COUNT_MAX)
+    {
+        return None;
+    }
+    let start = usize::from(chunk_index) * SOURCE_KEYMAP_CHUNK_DATA_LEN;
+    let end = (start + SOURCE_KEYMAP_CHUNK_DATA_LEN).min(payload.len());
+    let mut bytes = [0; DIAGNOSTICS_REPORT_LEN];
+    bytes[0] = CONFIG_PROTOCOL_VERSION;
+    bytes[1] = KEYMAP_KIND;
+    bytes[2] = SOURCE_KEYMAP_REPORT_VERSION;
+    bytes[3] = chunk_index;
+    bytes[4] = chunk_count as u8;
+    bytes[5..7].copy_from_slice(&(payload.len() as u16).to_le_bytes());
+    bytes[7] = slot;
+    bytes[8..8 + end - start].copy_from_slice(&payload[start..end]);
     let crc = crc32_ieee(&bytes[..28]);
     bytes[28..].copy_from_slice(&crc.to_le_bytes());
     Some(bytes)
@@ -875,6 +915,27 @@ mod tests {
         let expected = u32::from_le_bytes(block[28..].try_into().expect("four-byte CRC suffix"));
         assert_eq!(expected, crc32_ieee(&block[..28]));
         assert!(encode_keymap_chunk(&payload, 2).is_none());
+    }
+
+    #[test]
+    fn the_source_keymap_block_carries_slot_and_uses_version_two() {
+        let payload = [2, 3, 1, 0x04, 0x02, 0x05, 0];
+
+        let block = encode_source_keymap_chunk(&payload, 3, 0)
+            .expect("the first source keymap chunk exists");
+
+        assert_eq!(block[0], CONFIG_PROTOCOL_VERSION);
+        assert_eq!(block[1], KEYMAP_KIND);
+        assert_eq!(block[2], 2);
+        assert_eq!(block[3], 0);
+        assert_eq!(block[4], 1);
+        assert_eq!(&block[5..7], &[7, 0]);
+        assert_eq!(block[7], 3);
+        assert_eq!(&block[8..15], &payload);
+        assert!(block[15..28].iter().all(|byte| *byte == 0));
+        let expected = u32::from_le_bytes(block[28..].try_into().expect("four-byte CRC suffix"));
+        assert_eq!(expected, crc32_ieee(&block[..28]));
+        assert!(encode_source_keymap_chunk(&payload, 5, 0).is_none());
     }
 
     #[test]

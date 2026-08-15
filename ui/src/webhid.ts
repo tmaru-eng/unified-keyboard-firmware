@@ -18,12 +18,16 @@ import {
   type StatusBlock,
   buildSelectBlock,
   buildSelectKeymapChunk,
+  buildSelectSourceKeymapChunk,
   decodeKeymapChunk,
+  decodeSourceKeymapChunk,
   decodeSecurity,
   decodeSource,
   decodeStatus,
   KEYMAP_CHUNK_COUNT_MAX,
   KEYMAP_CHUNK_DATA_LEN,
+  SOURCE_KEYMAP_CHUNK_COUNT_MAX,
+  SOURCE_KEYMAP_CHUNK_DATA_LEN,
   type KeymapChunkBlock,
   selectFraming,
 } from './diagnostics';
@@ -31,6 +35,7 @@ import { buildPairingMethodReport, buildPairingModeReport } from './commands';
 import {
   TARGET_SCRATCH,
   TARGET_KEYMAP,
+  TARGET_SOURCE_KEYMAP,
   TARGET_SOURCE_PROFILE,
   buildWriteBegin,
   buildWriteChunk,
@@ -44,7 +49,13 @@ import {
 } from './bondManagement';
 import { CONFIG_REPORT_ID, buildInjectionPayload, buildSourceReport } from './injection';
 import { encodeSourceProfilePayload, type Profile } from './profile';
-import { decodeKeymapPayload, encodeKeymapPayload, type KeymapRule } from './keymap';
+import {
+  decodeKeymapPayload,
+  decodeSourceKeymapPayload,
+  encodeKeymapPayload,
+  encodeSourceKeymapPayload,
+  type KeymapRule,
+} from './keymap';
 
 /** Approved application identity for the independent bridge prototype. */
 export const USB_VENDOR_ID = 0x1209;
@@ -238,6 +249,48 @@ export async function readKeymap(device: ConfigHidDevice): Promise<KeymapRule[]>
   return decodeKeymapPayload(payload);
 }
 
+/** Reads and validates one source slot's complete keymap payload. */
+export async function readSourceKeymap(
+  device: ConfigHidDevice,
+  slot: number,
+): Promise<KeymapRule[]> {
+  if (!device.opened) {
+    await device.open();
+  }
+  const chunks: KeymapChunkBlock[] = [];
+  let payloadLength: number | undefined;
+  let chunkCount: number | undefined;
+  for (let index = 0; index < SOURCE_KEYMAP_CHUNK_COUNT_MAX; index += 1) {
+    await device.sendFeatureReport(CONFIG_REPORT_ID, buildSelectSourceKeymapChunk(slot, index));
+    const chunk = decodeSourceKeymapChunk(await readBlock(device));
+    if (chunk.sourceSlot !== slot || chunk.chunkIndex !== index) {
+      throw new Error(`source keymap chunk order changed for slot ${slot}`);
+    }
+    if (payloadLength === undefined) {
+      payloadLength = chunk.payloadLength;
+      chunkCount = chunk.chunkCount;
+    } else if (chunk.payloadLength !== payloadLength || chunk.chunkCount !== chunkCount) {
+      throw new Error('source keymap chunk metadata changed during read');
+    }
+    chunks.push(chunk);
+    if (chunks.length === chunk.chunkCount) {
+      break;
+    }
+  }
+  if (payloadLength === undefined || chunkCount === undefined || chunks.length !== chunkCount) {
+    throw new Error('source keymap read ended before all chunks arrived');
+  }
+  const payload = new Uint8Array(payloadLength);
+  for (const chunk of chunks) {
+    payload.set(chunk.data, chunk.chunkIndex * SOURCE_KEYMAP_CHUNK_DATA_LEN);
+  }
+  const decoded = decodeSourceKeymapPayload(payload);
+  if (decoded.slot !== slot) {
+    throw new Error(`source keymap payload belongs to slot ${decoded.slot}, not ${slot}`);
+  }
+  return decoded.rules;
+}
+
 /**
  * Opens or closes the bridge to keyboards it has not bonded with.
  *
@@ -316,6 +369,15 @@ export async function writeKeymap(
   rules: readonly KeymapRule[],
 ): Promise<TransferBlock> {
   return writeConfig(device, encodeKeymapPayload(rules), TARGET_KEYMAP);
+}
+
+/** Writes one source-specific keymap through target 6. */
+export async function writeSourceKeymap(
+  device: ConfigHidDevice,
+  slot: number,
+  rules: readonly KeymapRule[],
+): Promise<TransferBlock> {
+  return writeConfig(device, encodeSourceKeymapPayload(slot, rules), TARGET_SOURCE_KEYMAP);
 }
 
 /** Renames one registered BLE source and verifies transfer acceptance. */

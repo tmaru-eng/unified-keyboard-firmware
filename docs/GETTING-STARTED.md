@@ -1,27 +1,25 @@
 # Getting started
 
-このページは、公開リリースをXIAO nRF52840 Senseへ書き込み、BLEキーボードを接続し、
-Web UIから設定するまでの利用者向け手順です。実機を使わずにUIだけ確認する場合は、最後の
-「シミュレーション」を使ってください。
+This guide covers flashing the public firmware, connecting a BLE keyboard, and
+using the Web UI. If you only want to inspect the UI, use the simulation section
+without a board.
 
-## 1. 用意するもの
+## Hardware
 
-- Seeed XIAO nRF52840 Sense
-- 対象リリースのUF2ファイル
-- ANSI US配列のBLEキーボード
-- WebHIDを使えるChromeまたはEdge
-- UF2書き込み用のデータ通信対応USBケーブル
+Use a Seeed XIAO nRF52840 Sense, a USB data cable, an ANSI US BLE keyboard, and
+Chrome or Edge with WebHID support. The bridge is the USB HID output device and
+accepts BLE keyboard input. Keep the keyboard disconnected from the host while
+changing firmware or persistent configuration.
 
-書き込み対象のボード、ファームウェア版、ビルド識別子は[リリースページ](https://github.com/tmaru-eng/unified-keyboard-firmware/releases)
-と各リリースノートで確認してください。
-別のボードや別のUF2を推測で書き込まないでください。
+## Flashing
 
-## 2. 現在のUF2を確認してから書き込む
+Download the UF2 from the matching GitHub Release. Check the board model, firmware
+version, and build identifier before writing. Do not flash an assumed board or
+artifact.
 
-キーボードを切断し、無線が動作していない状態で行います。無線動作中にflashのerase/writeを
-行ってはいけません。
-
-まず、対象UF2とバックアップ先を絶対パスで指定して安全確認だけを実行します。
+Keep all BLE keyboards disconnected and make sure no radio link is active. Follow
+the release-specific backup and preflight instructions. From the repository root,
+run the preflight first:
 
 ```powershell
 Set-Location firmware/nrf52840-ble-usb/tools
@@ -31,76 +29,96 @@ Set-Location firmware/nrf52840-ble-usb/tools
   -WhatIf
 ```
 
-`-WhatIf`の出力で、XIAO SenseのBoard-ID、S140、UF2範囲、バックアップ先が期待どおりである
-ことを確認します。利用者が書き込みを承認した後だけ、同じコマンドから`-WhatIf`を外し、
-`-ConfirmFlash`を追加して実行します。
+Confirm the XIAO Sense Board-ID, S140, UF2 range, and backup path. Only after
+explicit owner approval, remove `-WhatIf`, add `-ConfirmFlash`, put the board in
+its UF2 bootloader, and run the command. Wait for the board to reboot and keep the
+`CURRENT.UF2` backup for recovery.
 
-```powershell
-.\flash_xiao.ps1 `
-  -Uf2Path 'C:\path\to\release.uf2' `
-  -BackupDirectory 'C:\path\to\uf2-backups' `
-  -ConfirmFlash
-```
+Never erase or write flash while a BLE link is active. A physical write requires
+explicit owner approval and a verified recovery path.
 
-書き込み後はボードが再列挙するまで待ちます。`CURRENT.UF2`のバックアップは、復旧が必要に
-なった場合のために保管してください。
+## Diagnostics
 
-## 3. 診断を読む
+Use the host tool to read the firmware version, bond state, source slots, and
+profile state:
 
 ```powershell
 Set-Location firmware/nrf52840-ble-usb/tools
 uv run read_diagnostics.py
 ```
 
-ファームウェア版、ビルド識別子、USB状態、ボンド状態、ソースslot、プロファイルを確認します。
-起動直後のボンド状態は鍵の読み出し前の一時状態の場合があるため、数秒後に再読出しします。
+Immediately after boot, bond loading may still be in progress. Read diagnostics
+again after a few seconds before concluding that stored keys are absent.
 
-## 4. キーボードを接続する
+## Connecting a keyboard
 
-既にボンド済みのキーボードは、通常は自動再接続を待ちます。新しいキーボードを迎える場合
-だけ、次を実行してからキーボード側をペアリング待機にします。
+Bonded keyboards normally reconnect automatically. Open pairing mode only when
+welcoming a new keyboard:
 
 ```powershell
 uv run pairing_mode.py on
 ```
 
-接続後、`read_diagnostics.py`で対象slotがConnectedになり、入力元が意図したslotとして表示
-されることを確認します。ペアリング済みのキーボードを使うためだけに、ペアリングモードを
-有効にする必要はありません。
+After pairing, confirm that the intended source slot is connected in diagnostics.
+Do not enable pairing mode merely to reconnect an already bonded keyboard.
 
-## 5. Web UIでプロファイルを設定する
+## Web UI
 
-公開[Pages](https://tmaru-eng.github.io/unified-keyboard-firmware/)を開き、ChromeまたはEdgeで「実機に接続」を選びます。ブラウザのデバイス選択では、
-ブリッジの設定用HID interfaceを選択してください。UIは設定usageだけでなく、許可済みの
-vendor/product identityも検証します。
+Open the published Pages site in Chrome or Edge. Choose **Connect to device** and
+select the bridge's configuration HID interface. The UI validates the vendor usage,
+report identity, and approved vendor/product identity; selecting an unrelated HID
+device is rejected.
 
-現行版で設定できるものは、入力元ごとのUS→JIS、Caps→Ctrl、Alt/GUI、登録slot管理、診断です。
-設定を書き込んだ後、接続中は無線が静穏になるまで保存待ちになることがあります。保存結果は
-診断とUIの状態表示で確認し、保存中にflashやリセットを行わないでください。
+For a registered BLE source, **Disconnect** ends only the link and preserves its
+bond and settings. **Reconnect** permits discovery again but does not claim that
+the keyboard is connected until its advertisement and GATT setup complete.
+**Remove pairing** disconnects first when necessary, then removes the bond, name,
+and source settings.
 
-## 6. キーマップを編集する
+The profile screen can change US-to-JIS, Caps-to-Control, and Alt/GUI behavior for
+the selected source. Source slots, link state, and the pending-save state must be
+visible before applying a change.
 
-現行のキーマップは固定32ルール・単一レイヤーです。Web UIでキーを編集し、未対応のレイヤーや
-アクションを表示しないため、画面に出ない機能はまだ保存できません。保存後はUIの結果表示と
-`read_diagnostics.py`のキーマップ診断で確認します。
+## First configuration
 
-## シミュレーション
+1. Read diagnostics and confirm the firmware version.
+2. Enable the US-to-JIS profile for the relevant source.
+3. Pair a keyboard only when the pairing window is explicitly open.
+4. Confirm source state and output in diagnostics.
 
-実機なしで確認する場合は、リポジトリの`ui`で次を実行します。
+In the keymap screen, choose a registered BLE slot or the virtual slot, read its
+keymap, edit the fixed 32-rule single layer, and save it. The host tool exposes
+the same path with:
 
 ```powershell
-Set-Location ui
+uv run read_keymap.py --slot 4
+uv run write_keymap.py --slot 4 --us-jis
+```
+
+Settings can be applied to RAM while a source is connected and may remain pending
+until the radio reaches a quiet boundary. Confirm the result in the UI or with
+`read_diagnostics.py`; do not reset or flash while a save is pending.
+
+## Simulation
+
+From the repository's `ui` directory, run:
+
+```powershell
 npm ci
 npm run dev
 ```
 
-表示されたURLを開き、「シミュレーションに接続」を押します。シミュレーションはBLE、USB、
-flashを開かず、実機と同じ設定プロトコルで診断、プロファイル、固定キーマップのUI導線を
-確認します。
+Open the displayed URL and choose **Connect to simulation**. The simulation uses
+the same 32-byte configuration protocol, but it does not open BLE, USB, or flash
+and does not send keystrokes to physical hardware.
 
-## 困ったとき
+## Troubleshooting
 
-- 実機が見えない場合は、USBケーブル、HID interface、Chrome/Edgeの選択対象を確認する。
-- ボンド済みなのに接続しない場合は、OS側のペアリング状態を確認してから診断を再読出しする。
-- 書き込みが必要な場合は、キーボードを切断し、`-WhatIf`、バックアップ、明示承認の順で進める。
-- 未対応機能や設定取り込みの要否は、[Configuration model](CONFIGURATION.md)を確認する。
+- If the bridge is not listed, check the USB data cable and select the configuration
+  HID interface, not the keyboard HID interface.
+- If a bonded keyboard does not connect, verify the host OS pairing state and read
+  diagnostics again after startup settles.
+- If a firmware write is needed, disconnect keyboards, run the release preflight,
+  preserve a backup, and obtain explicit approval before writing.
+
+- [日本語 getting started](GETTING-STARTED.ja.md)

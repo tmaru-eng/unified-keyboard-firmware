@@ -101,6 +101,7 @@ impl RequestHandler for ConfigRequestHandler {
             ConfigRequest::SelectPanicChunk(_)
             | ConfigRequest::SelectSource(_)
             | ConfigRequest::SelectKeymapChunk(_)
+            | ConfigRequest::SelectSourceKeymapChunk { .. }
             | ConfigRequest::SetPairingMode(_)
             | ConfigRequest::SetPairingMethod { .. }
             | ConfigRequest::WriteBegin { .. }

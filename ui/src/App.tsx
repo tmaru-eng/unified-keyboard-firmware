@@ -25,8 +25,10 @@ export function App({ device }: { device: BridgeDevice }) {
   const [snapshot, setSnapshot] = useState<BridgeSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showSimulation, setShowSimulation] = useState(false);
   const [running, setRunning] = useState(false);
   const [savingProfile, setSavingProfile] = useState<string | null>(null);
+  const [selectedKeymapSlot, setSelectedKeymapSlot] = useState(0);
   const [physicalOverrides, setPhysicalOverrides] = useState<Record<number, SourceProfile>>({});
   const readGeneration = useRef(0);
   // The management dashboard and diagnostics both show live connection state.
@@ -137,6 +139,7 @@ export function App({ device }: { device: BridgeDevice }) {
     setError(null);
     try {
       setSnapshot(await device.runDemoScenario(scenario));
+      setShowSimulation(true);
     } catch {
       setError('シミュレーションを実行できませんでした。');
     } finally {
@@ -146,12 +149,26 @@ export function App({ device }: { device: BridgeDevice }) {
 
   const busy = running || savingProfile !== null || hardware.reading;
   const physical = hardware.device && !hardware.simulated;
-  const keymapSources = physical
+  const keymapSources = hardware.device
     ? hardware.sources
       .filter((source) => source.transportLabel === 'BLE' || source.slot === 4)
       .map(sourceProfileFromDiagnostics)
-      .map((profile) => physicalOverrides[profile.slot as number] ?? profile)
-    : snapshot?.sources ?? [];
+      .map((profile) => physical
+        ? physicalOverrides[profile.slot as number] ?? profile
+        : profile)
+    : [];
+  const profileSources = physical
+    ? keymapSources
+    : hardware.simulated ? snapshot?.sources ?? [] : [];
+  const availableKeymapSlots = keymapSources
+    .map((source) => source.slot)
+    .filter((slot): slot is number => slot !== undefined);
+
+  useEffect(() => {
+    if (availableKeymapSlots.length > 0 && !availableKeymapSlots.includes(selectedKeymapSlot)) {
+      setSelectedKeymapSlot(availableKeymapSlots[0]);
+    }
+  }, [availableKeymapSlots.join(','), selectedKeymapSlot]);
 
   return <main className="app-shell">
     <header>
@@ -165,11 +182,11 @@ export function App({ device }: { device: BridgeDevice }) {
     {!loading && !snapshot && <p>デバイスの状態を取得できませんでした。再試行してください。</p>}
     {snapshot && <section>
       {page === 'home' && <Home snapshot={snapshot} hardware={hardware} onNavigate={setPage} />}
-      {page === 'keymap' && <Keymap sources={keymapSources} disabled={busy} saving={savingProfile !== null} onToggle={updateProfile} keymap={hardware.keymap} keymapAvailable={hardware.device !== null} keymapDestination={hardware.device ? hardware.simulated ? 'シミュレーション' : '実機' : '未接続'} keymapBusy={hardware.reading} onReadKeymap={hardware.readKeymap} onWriteKeymap={hardware.writeKeymap} />}
-      {page === 'connections' && (hardware.device ? <Pairing hardware={hardware} /> : <SimulatedConnections sources={snapshot.sources} />)}
+      {page === 'keymap' && <Keymap sources={profileSources} keymapSources={keymapSources} selectedSlot={selectedKeymapSlot} onSelectSlot={setSelectedKeymapSlot} disabled={busy} saving={savingProfile !== null} onToggle={updateProfile} keymap={hardware.keymaps[selectedKeymapSlot] ?? null} keymapAvailable={hardware.device !== null} keymapDestination={hardware.device ? hardware.simulated ? 'シミュレーション' : '実機' : '未接続'} keymapBusy={hardware.reading} onReadKeymap={() => hardware.readSourceKeymap(selectedKeymapSlot)} onWriteKeymap={(rules) => hardware.writeSourceKeymap(selectedKeymapSlot, rules)} />}
+      {page === 'connections' && (hardware.device ? <Pairing hardware={hardware} /> : <DisconnectedConnections />)}
       {page === 'demo' && <Demo disabled={busy} running={running} onRun={runScenario} />}
       {page === 'virtual' && <VirtualKeyboard hardware={hardware} />}
-      {page === 'diagnostics' && <Diagnostics snapshot={snapshot} hardware={hardware} />}
+      {page === 'diagnostics' && <Diagnostics snapshot={snapshot} hardware={hardware} showSimulation={showSimulation} />}
     </section>}
   </main>;
 }
@@ -263,18 +280,19 @@ function keymapValidationMessage(rules: readonly KeymapRule[]): string | null {
 
 function Home({ snapshot, hardware, onNavigate }: { snapshot: BridgeSnapshot; hardware: BridgeHardware; onNavigate: (page: Page) => void }) {
   const sources = hardware.device
-    ? hardware.sources.map(sourceProfileFromDiagnostics).filter((source) => source.transport !== 'Unregistered')
-    : snapshot.sources;
+    ? (hardware.simulated ? snapshot.sources : hardware.sources.map(sourceProfileFromDiagnostics))
+      .filter((source) => source.transport !== 'Unregistered')
+    : [];
   const registered = sources.filter((source) => source.slot !== undefined && source.slot < 4 && source.transport === 'Bluetooth');
   const connected = sources.filter((source) => source.connected);
   const availableSlots = Math.max(0, 4 - registered.length);
   const sourcesLoading = hardware.device !== null && hardware.reading && hardware.sources.length === 0;
   const outputLabel = hardware.device
     ? hardware.status?.stateLabel ?? '読み込み中'
-    : snapshot.outputReady ? 'シミュレーション稼働中' : '停止';
+    : '未接続';
   const sourceContext = hardware.device
     ? hardware.simulated ? 'シミュレーション' : '実機'
-    : 'シミュレーションデータ';
+    : '未接続';
 
   return <>
     <div className="page-heading">
@@ -361,8 +379,11 @@ function ActionCard({ title, detail, button, onClick }: { title: string; detail:
   </article>;
 }
 
-function Keymap({ sources, disabled, saving, onToggle, keymap, keymapAvailable, keymapDestination, keymapBusy, onReadKeymap, onWriteKeymap }: {
+function Keymap({ sources, keymapSources, selectedSlot, onSelectSlot, disabled, saving, onToggle, keymap, keymapAvailable, keymapDestination, keymapBusy, onReadKeymap, onWriteKeymap }: {
   sources: SourceProfile[];
+  keymapSources: SourceProfile[];
+  selectedSlot: number;
+  onSelectSlot: (slot: number) => void;
   disabled: boolean;
   saving: boolean;
   onToggle: (profile: SourceProfile, field: keyof Pick<SourceProfile, 'usToJis' | 'capsToCtrl' | 'swapAltGui'>) => Promise<void>;
@@ -408,7 +429,17 @@ function Keymap({ sources, disabled, saving, onToggle, keymap, keymapAvailable, 
     {sources.map((profile) => <article className="profile" key={profile.id} aria-busy={saving}><h3>{profile.name} <small>slot {profile.slot ?? profile.id} · {profile.transport} · {profile.state ?? (profile.connected ? 'Connected' : 'Disconnected')}</small></h3><p>profile 0b{profileFlags(profile).toString(2).padStart(3, '0')}</p><Toggle label="US → JIS" value={profile.usToJis} disabled={disabled} onChange={() => void onToggle(profile, 'usToJis')} /><Toggle label="Caps Lock → Control" value={profile.capsToCtrl} disabled={disabled} onChange={() => void onToggle(profile, 'capsToCtrl')} /><Toggle label="Alt ⇄ GUI" value={profile.swapAltGui} disabled={disabled} onChange={() => void onToggle(profile, 'swapAltGui')} /></article>)}
     <section className="diagnostic-panel" aria-labelledby="keymap-editor-title">
       <h3 id="keymap-editor-title">固定キーマップ</h3>
-      <p>実機またはシミュレーションから現在のルールを読み込み、編集して保存できます。</p>
+      <p>ソースごとに現在のルールを読み込み、編集して保存できます。</p>
+      <label htmlFor="keymap-source-select">編集対象ソース</label>
+       <select
+         id="keymap-source-select"
+         value={selectedSlot}
+         disabled={disabled || keymapBusy || keymapSources.length === 0}
+         onChange={(event) => onSelectSlot(Number(event.target.value))}
+       >
+         {keymapSources.length === 0 && <option value={selectedSlot}>ソース未接続</option>}
+         {keymapSources.map((source) => <option key={source.id} value={source.slot ?? selectedSlot}>slot {source.slot ?? source.id} · {source.name}</option>)}
+      </select>
       {!keymapAvailable && <p>キーマップの読み書きにはブリッジ接続が必要です。</p>}
       {keymapAvailable && <p className="keymap-destination">保存先: {keymapDestination}</p>}
       {keymapAvailable && <button type="button" disabled={disabled || keymapBusy} onClick={() => void onReadKeymap()}>キーマップを読み込む</button>}
@@ -464,14 +495,10 @@ function Toggle({ label, value, disabled, onChange }: { label: string; value: bo
  * computer and pairing a keyboard there only works from a page, which is what
  * makes this screen worth having before the rest of device management.
  */
-/** The simulator's device list, shown only while no bridge is connected. */
-function SimulatedConnections({ sources }: { sources: SourceProfile[] }) {
+function DisconnectedConnections() {
   return <>
     <h2>キーボード登録</h2>
-    <p className="simulation-label">
-      SIMULATED — 上の「実機に接続」または「シミュレーションに接続」でブリッジの状態に切り替わります
-    </p>
-    {sources.map((source) => <p key={source.id}>slot {source.slot ?? source.id} · {source.name} · {source.transport} · {source.state ?? (source.connected ? 'Connected' : 'Disconnected')} · profile 0b{profileFlags(source).toString(2).padStart(3, '0')}</p>)}
+    <p className="empty-state">ブリッジ未接続です。ヘッダーの「実機に接続」または「シミュレーションに接続」を選ぶと、登録スロットを表示できます。</p>
   </>;
 }
 
@@ -692,17 +719,23 @@ function HardwareDiagnostics({ hardware }: { hardware: BridgeHardware }) {
   </>;
 }
 
-function Diagnostics({ snapshot, hardware }: { snapshot: BridgeSnapshot; hardware: BridgeHardware }) {
-  const formattedReport = snapshot.hidOutput.map((byte) => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+function Diagnostics({ snapshot, hardware, showSimulation }: { snapshot: BridgeSnapshot; hardware: BridgeHardware; showSimulation: boolean }) {
   if (hardware.device) {
     return <>
       <h2>診断</h2>
       <HardwareDiagnostics hardware={hardware} />
     </>;
   }
+  if (!showSimulation) {
+    return <>
+      <h2>診断</h2>
+      <p className="empty-state">ブリッジ未接続です。実機またはシミュレーションに接続すると、診断値を表示します。</p>
+    </>;
+  }
+  const formattedReport = snapshot.hidOutput.map((byte) => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ');
   return <>
     <h2>診断</h2>
-    <p className="simulation-label">SIMULATED OUTPUT — 実機から取得した値ではありません。上の「実機に接続」で実機の値に切り替わります。</p>
+    <p className="simulation-label">SIMULATED OUTPUT — デモで生成した値です。実機から取得した値ではありません。</p>
     <section className="diagnostic-panel" aria-labelledby="hid-output-title">
       <h3 id="hid-output-title">8-byte HID output</h3>
       <output className="hid-report">{formattedReport}</output>

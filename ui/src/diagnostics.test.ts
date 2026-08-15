@@ -14,7 +14,9 @@ import {
   buildSelectBlock,
   buildSelectKeymapChunk,
   buildSelectSource,
+  buildSelectSourceKeymapChunk,
   decodeKeymapChunk,
+  decodeSourceKeymapChunk,
   decodeSecurity,
   decodeSource,
   decodeStatus,
@@ -319,6 +321,50 @@ describe('block selection', () => {
     expect(selector.slice(3, 28).every((byte) => byte === 0)).toBe(true);
     const view = new DataView(selector.buffer, selector.byteOffset);
     expect(view.getUint32(28, true)).toBe(crc32Ieee(selector.subarray(0, 28)));
+  });
+
+  it('builds a source-keymap selector with explicit slot and chunk bytes', () => {
+    const selector = buildSelectSourceKeymapChunk(3, 2);
+
+    expect(selector[0]).toBe(CONFIG_PROTOCOL_VERSION);
+    expect(selector[1]).toBe(109); // UKF_SELECT_SOURCE_KEYMAP
+    expect(selector[2]).toBe(3);
+    expect(selector[3]).toBe(2);
+    expect(selector.slice(4, 28).every((byte) => byte === 0)).toBe(true);
+    const view = new DataView(selector.buffer, selector.byteOffset);
+    expect(view.getUint32(28, true)).toBe(crc32Ieee(selector.subarray(0, 28)));
+  });
+});
+
+describe('source-keymap block', () => {
+  it('decodes the version-two slot and payload offset', () => {
+    const payload = Uint8Array.from([2, 3, 1, 4, 2, 5, 0]);
+    const bytes = block(KEYMAP_KIND, (view, raw) => {
+      raw[2] = 2;
+      raw[3] = 0;
+      raw[4] = 1;
+      view.setUint16(5, payload.length, true);
+      raw[7] = 3;
+      raw.set(payload, 8);
+    });
+
+    const decoded = decodeSourceKeymapChunk(bytes);
+
+    expect(decoded.sourceSlot).toBe(3);
+    expect(decoded.chunkIndex).toBe(0);
+    expect(Array.from(decoded.data)).toEqual(Array.from(payload));
+  });
+
+  it('rejects a source-keymap block whose slot is outside the registration range', () => {
+    const bytes = block(KEYMAP_KIND, (view, raw) => {
+      raw[2] = 2;
+      raw[4] = 1;
+      view.setUint16(5, 3, true);
+      raw[7] = 5;
+      raw.set([2, 0, 0], 8);
+    });
+
+    expect(() => decodeSourceKeymapChunk(bytes)).toThrow(/source keymap slot/);
   });
 });
 

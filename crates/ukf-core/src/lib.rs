@@ -586,7 +586,7 @@ impl SourceSlot {
 #[derive(Clone, Copy, Debug)]
 pub struct BridgeEngine {
     slots: [SourceSlot; MAX_SOURCES],
-    keymap: Keymap,
+    keymaps: [Keymap; MAX_SOURCES],
 }
 
 impl BridgeEngine {
@@ -594,7 +594,7 @@ impl BridgeEngine {
     pub const fn new() -> Self {
         Self {
             slots: [SourceSlot::EMPTY; MAX_SOURCES],
-            keymap: Keymap::US_JIS,
+            keymaps: [Keymap::US_JIS; MAX_SOURCES],
         }
     }
 
@@ -712,17 +712,34 @@ impl BridgeEngine {
         Ok(())
     }
 
-    /// Returns the current data-driven keymap.
+    /// Returns the legacy global keymap, kept as the slot-zero view for callers
+    /// that predate source-specific maps.
     pub const fn keymap(&self) -> Keymap {
-        self.keymap
+        self.keymaps[0]
     }
 
-    /// Replaces the data-driven keymap used by layout-enabled sources.
+    /// Returns the data-driven keymap assigned to one source slot.
+    pub fn source_keymap(&self, id: SourceId) -> Result<Keymap, BridgeError> {
+        let index = id.index().ok_or(BridgeError::UnknownSource)?;
+        if self.slots[index].transport.is_none() {
+            return Err(BridgeError::UnregisteredSource);
+        }
+        Ok(self.keymaps[index])
+    }
+
+    /// Replaces the legacy global keymap for every source.
     ///
     /// Hardware adapters should release the aggregate report before calling
     /// this method, just as they do before changing a source profile.
     pub fn set_keymap(&mut self, keymap: Keymap) {
-        self.keymap = keymap;
+        self.keymaps = [keymap; MAX_SOURCES];
+    }
+
+    /// Replaces the keymap assigned to exactly one registered source slot.
+    pub fn set_source_keymap(&mut self, id: SourceId, keymap: Keymap) -> Result<(), BridgeError> {
+        let index = self.registered_index(id)?;
+        self.keymaps[index] = keymap;
+        Ok(())
     }
 
     /// Processes a boot report from a connected source and returns the aggregate output.
@@ -774,7 +791,7 @@ impl BridgeEngine {
                         || slot.report.keys.iter().any(|usage| *usage != 0))
             })
             .count();
-        for slot in &self.slots {
+        for (index, slot) in self.slots.iter().enumerate() {
             if !slot.attached {
                 continue;
             }
@@ -785,11 +802,11 @@ impl BridgeEngine {
             // corrupted chord; an NKRO/event output adapter will remove this
             // conservative limitation later.
             let mut profile = slot.profile;
-            if active_sources > 1 && profile.us_to_jis && self.keymap.contains_mapping(slot.report)
-            {
+            let keymap = self.keymaps[index];
+            if active_sources > 1 && profile.us_to_jis && keymap.contains_mapping(slot.report) {
                 profile.us_to_jis = false;
             }
-            let source = transform(slot.report, profile, self.keymap);
+            let source = transform(slot.report, profile, keymap);
             report.modifiers |= source.modifiers;
             for usage in source.keys {
                 if usage == 0 || report.contains(usage) {

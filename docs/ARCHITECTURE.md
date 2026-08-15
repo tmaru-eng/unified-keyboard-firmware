@@ -1,30 +1,44 @@
-# Public architecture overview
+# Architecture
 
-入力デバイスの入力・変換・出力の意味論は`crates/ukf-core`に集め、BLE、USB、保存、
-ブラウザ、将来のポインティングセンサーはアダプタとして分離します。現行の最小製品は
-キーボード入力に限定し、マウスやトラックボールは将来の入力デバイス拡張です。
+UKF separates portable input behavior from board, transport, storage, and browser
+adapters:
 
-設定と実行モデルもUKF独自の契約です。ZMK/QMKとの実行互換を目標にせず、将来の設定取り込みは
-外部形式をUKFの正規モデルへ変換する境界アダプタとして扱います。
+- `ukf-core` contains transport-independent source identity, per-source profiles,
+  conversion policy, key state, and report aggregation. It is `no_std` and does
+  not depend on a board, radio, USB controller, storage implementation, browser,
+  or UI.
+- The nRF52840 adapter owns BLE HOGP input, source lifecycle, persistent
+  configuration, diagnostics, and USB HID output.
+- The Web UI and host tools use the bounded vendor configuration HID protocol.
+  React components call the UI application port instead of WebHID directly.
+
+The current bridge data flow is:
 
 ```text
 BLE HOGP ─────┐
               ├─ source adapter ─> ukf-core ─> USB HID output
 Virtual input ┘                 └> profile/keymap policy
 
-Web UI ─> BridgeDevice ─> WebHID configuration adapter
-                       └> in-browser simulation
+Web UI ─> BridgeHardware ─> WebHID configuration adapter
+                         └> in-browser simulation
 ```
 
-現行のコアは`no_std`で、source identity、プロファイル、固定容量キーマップ、レポート集約、
-切断時のキー解放を扱います。nRF52840アダプタはBLE HOGP central、USB HID device、設定HID、
-診断、保存を接続します。UIはWebHIDのreport操作を直接扱わず、`BridgeDevice`境界を通します。
+The current product is keyboard-first. USB Host input is a separate future
+adapter. Mouse, trackball, sensor, and other pointing-device events are part of
+the broader input-device direction, but are not promised by the current bridge.
 
-公開対象の現在の制約は次の通りです。
+The firmware supports one USB-side keyboard output path, four registered BLE
+source slots (`0..3`), one virtual source slot (`4`), and up to two concurrent
+BLE links in the current implementation. Profiles and fixed single-layer
+keymaps are owned by source slot; disconnecting one source must not release or
+overwrite another source's state.
 
-- BLE同時接続は現行実装の上限が2本。
-- キーマップは固定32ルール・単一レイヤー。
-- USB Host、マトリクススキャン、split keyboard、3本以上のBLE、NKRO、mouse、consumer、
-  pointing deviceは未対応。
-- WebHID設定は設定usageと許可済みvendor/product identityの両方を検証します。
-- ZMK/QMK設定のimporterは現行版にはなく、未対応の項目を黙って捨てる変換は行いません。
+The current limits are:
+
+- fixed 32-rule, single-layer keymaps;
+- no USB Host, matrix scanning, split keyboard, NKRO, consumer-control, or
+  pointing-device output;
+- no runtime ZMK/QMK compatibility. Future importers will translate a documented
+  subset into the independent UKF configuration model.
+
+- [日本語 architecture](ARCHITECTURE.ja.md)

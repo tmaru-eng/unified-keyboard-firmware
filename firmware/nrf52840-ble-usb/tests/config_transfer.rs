@@ -2,7 +2,7 @@
 
 use ukf_nrf52840_ble_usb::config_transfer::{
     ConfigTransfer, TARGET_BOND_MANAGEMENT, TARGET_KEYMAP, TARGET_PROFILE, TARGET_SCRATCH,
-    TARGET_SOURCE_PROFILE, TRANSFER_CAPACITY, TransferError, TransferState,
+    TARGET_SOURCE_KEYMAP, TARGET_SOURCE_PROFILE, TRANSFER_CAPACITY, TransferError, TransferState,
 };
 use ukf_nrf52840_ble_usb::uf2_reset::crc32_ieee;
 
@@ -104,6 +104,24 @@ fn keymap_target_is_accepted_by_begin_and_commit() {
         transfer.commit(TARGET_KEYMAP, payload.len() as u16, payload_crc),
         Ok(&payload[..])
     );
+}
+
+#[test]
+fn source_keymap_target_is_accepted_by_begin_and_commit() {
+    let payload = [2, 3, 0];
+    let payload_crc = crc32_ieee(&payload);
+    let mut transfer = ConfigTransfer::new();
+
+    transfer
+        .begin(TARGET_SOURCE_KEYMAP, payload.len() as u16, payload_crc)
+        .expect("source keymap target is supported");
+    transfer.chunk(0, &payload).unwrap();
+
+    assert_eq!(
+        transfer.commit(TARGET_SOURCE_KEYMAP, payload.len() as u16, payload_crc),
+        Ok(&payload[..])
+    );
+    assert_ne!(TARGET_SOURCE_KEYMAP, TARGET_KEYMAP);
 }
 
 #[test]

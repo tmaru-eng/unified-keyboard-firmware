@@ -28,10 +28,10 @@ $output = [System.IO.Path]::GetFullPath($OutputPath)
 $rawBinary = [System.IO.Path]::ChangeExtension($output, '.bin')
 $elf = Join-Path $repoRoot "target\$targetTriple\release\$binaryName"
 
-# Cargo discovers `.cargo/config.toml` from the working directory, not from
-# `--manifest-path`. Building from elsewhere would silently drop the
-# `-Tlink.x` rustflag and emit an ELF with no vector table, so the working
-# directory must be the repository root for the duration of the build.
+# Build from this worktree's root so Cargo and the crate build script resolve
+# the same repository. The firmware build script emits `-Tlink.x` only for the
+# thumb target; keeping the linker argument out of `.cargo/config.toml` avoids
+# duplicate flags when a linked worktree is nested under the parent checkout.
 Push-Location $repoRoot
 try {
     & cargo build --release `

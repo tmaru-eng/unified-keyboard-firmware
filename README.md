@@ -1,35 +1,37 @@
 # Unified Keyboard Firmware
 
-ANSI US配列のBLEキーボードを、JIS配列設定のWindowsで使うための、独立したRust製
-入力デバイスファームウェア基盤です。キーボードを最初の製品対象とし、現行の最小製品は
-Seeed XIAO nRF52840 Senseを使う
-BLE-to-USBブリッジで、変換はボード側で行い、PC側に常駐ソフトやドライバを置きません。
+- [日本語 README](README.ja.md)
 
-このプロジェクトの正規の設定モデルと実行モデルは、UKFが定義する独自規格です。
-ZMK/QMKのファームウェアを実行する互換層ではありません。将来、ZMK/QMKなどの既存設定を
-UKFの設定モデルへ取り込むアダプタを提供する可能性はありますが、対応範囲を明示し、
-未対応の意味を黙って捨てない方針です。
+Unified Keyboard Firmware (UKF) is an independent Rust input-device firmware
+platform. Its first product is a BLE-to-USB bridge using the Seeed XIAO
+nRF52840 Sense. It converts an external ANSI US keyboard for a Windows host
+configured for JIS; conversion runs on the board without a resident PC process
+or keyboard driver.
 
-ファームウェアを乗り換えるたびに設定資産や操作方法が分断される問題を減らし、
-ハードウェア・ファームウェア・Web UIをまたいで設定を持ち運べる共通基盤を目指します。
+UKF defines its own versioned configuration and execution model. It is not a
+runtime compatibility layer for ZMK or QMK. Future importers may translate a
+documented subset of existing keyboard configurations into the UKF model, while
+reporting unsupported fields instead of silently discarding their meaning.
 
-この公開ツリーは、コア・ファームウェア・Web UI・テストを確認できる配布用snapshotです。
-現行ブリッジでは、キーボード入力についてソース別プロファイル、登録slot、固定32ルール・
-単一レイヤーのキーマップ、診断、Web UIを扱えます。将来はマウス、トラックボールなどの
-ポインティングデバイスも同じ入力デバイス管理の対象にします。多層アクション、USB Host、NKRO、
-ZMK/QMK設定取り込みは、現行リリースの対応範囲に含めません。
+The project aims to keep configuration portable across hardware, firmware, and
+the Web UI. The current bridge supports source-specific profiles, four registered
+BLE slots, one virtual source, a fixed 32-rule single-layer keymap, diagnostics,
+and a browser-based management UI. Mouse, trackball, and other pointing devices
+are future input-device targets; layered actions, USB Host, NKRO, and ZMK/QMK
+import are not part of the current release.
 
-## 利用者向けクイックスタート
+## Quick start
 
-まず [Getting started](docs/GETTING-STARTED.md) の手順で、対象UF2の確認、バックアップ、
-書き込み、診断、キーボード接続、Web UI設定まで進めてください。実機を持っていない場合は、
-同じページのシミュレーション手順でUIと設定モデルを確認できます。
+Follow [Getting started](docs/GETTING-STARTED.md) to check the matching UF2,
+preserve a backup, flash the board, read diagnostics, connect a keyboard, and
+configure the bridge. Without hardware, use the simulation instructions on the
+same page to inspect the UI and configuration protocol.
 
-公開UI: https://tmaru-eng.github.io/unified-keyboard-firmware/
+Published UI: https://tmaru-eng.github.io/unified-keyboard-firmware/
 
-## 開発者向け確認
+## Development checks
 
-Rust stable、Node.js 24、npmを使います。ホスト側の確認は次の通りです。
+The project uses Rust stable, Node.js 24, and npm. The main host-side checks are:
 
 ```powershell
 cargo fmt --all -- --check
@@ -41,14 +43,16 @@ npm test
 npm run build
 ```
 
-実機なしでUIだけを確認する場合:
+To inspect the UI without hardware:
 
 ```powershell
 npm run dev
 ```
 
-画面上の「シミュレーションに接続」から、実機と同じ設定プロトコルを使うシミュレーションを
-起動できます。実機WebHIDはChromeまたはEdgeのユーザー操作が必要です。
+Choose **Connect to simulation**. The simulator speaks the same configuration
+protocol but does not connect to BLE, USB, or flash and does not send keystrokes
+to physical hardware. Physical WebHID use requires a user action in Chrome or
+Edge.
 
 ## Documents
 
@@ -56,6 +60,7 @@ npm run dev
 - [Configuration model](docs/CONFIGURATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Security and device boundaries](docs/SECURITY.md)
+- [日本語 documentation](docs/README.ja.md)
 
 ## Project policies
 
@@ -64,5 +69,5 @@ npm run dev
 
 ## License
 
-MITまたはApache-2.0のデュアルライセンスです。詳細はリポジトリのライセンスファイルを
-参照してください。
+The project is dual-licensed under MIT or Apache-2.0. See the license files in
+the repository for the applicable terms.

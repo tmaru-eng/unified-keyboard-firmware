@@ -1,25 +1,37 @@
 //! Versioned wire format for the first data-driven keymap.
 
 use crate::uf2_reset::crc32_ieee;
-use ukf_core::{KEYMAP_RULE_CAPACITY, Keymap, KeymapError, KeymapRule};
+use ukf_core::{KEYMAP_RULE_CAPACITY, Keymap, KeymapError, KeymapRule, SOURCE_SLOT_COUNT};
 
 /// Version of the fixed single-layer keymap payload.
 pub const KEYMAP_PAYLOAD_VERSION: u8 = 1;
+/// Version of the source-slot keymap payload carried by target 6.
+pub const SOURCE_KEYMAP_PAYLOAD_VERSION: u8 = 2;
 /// Bytes occupied by one rule in the payload.
 pub const KEYMAP_RULE_WIRE_LEN: usize = 4;
 /// Bytes before the first rule.
 pub const KEYMAP_PAYLOAD_HEADER_LEN: usize = 2;
+/// Bytes before the first rule in a source-slot payload.
+pub const SOURCE_KEYMAP_PAYLOAD_HEADER_LEN: usize = 3;
 /// Largest payload accepted by this codec.
 pub const KEYMAP_PAYLOAD_MAX_LEN: usize =
     KEYMAP_PAYLOAD_HEADER_LEN + KEYMAP_RULE_CAPACITY * KEYMAP_RULE_WIRE_LEN;
+/// Largest source-slot payload accepted by this codec.
+pub const SOURCE_KEYMAP_PAYLOAD_MAX_LEN: usize =
+    SOURCE_KEYMAP_PAYLOAD_HEADER_LEN + KEYMAP_RULE_CAPACITY * KEYMAP_RULE_WIRE_LEN;
 /// Fixed record size used by the dedicated keymap flash page.
 pub const KEYMAP_RECORD_LEN: usize = 160;
+/// Number of records held in the keymap page: one legacy fallback plus five slots.
+pub const KEYMAP_STORAGE_RECORD_COUNT: usize = SOURCE_SLOT_COUNT + 1;
+/// Bytes rewritten as one aligned keymap-page update.
+pub const KEYMAP_STORAGE_LEN: usize = KEYMAP_RECORD_LEN * KEYMAP_STORAGE_RECORD_COUNT;
 
 const INPUT_SHIFTED: u8 = 1 << 0;
 const OUTPUT_SHIFTED: u8 = 1 << 1;
 const RULE_FLAGS_MASK: u8 = INPUT_SHIFTED | OUTPUT_SHIFTED;
 const KEYMAP_MAGIC: u32 = 0x554b_464b;
 const KEYMAP_RECORD_VERSION: u8 = 1;
+const SOURCE_KEYMAP_RECORD_VERSION: u8 = 2;
 const KEYMAP_RECORD_PAYLOAD_OFFSET: usize = 8;
 const KEYMAP_RECORD_CRC_OFFSET: usize = KEYMAP_RECORD_LEN - size_of::<u32>();
 
@@ -28,6 +40,30 @@ const KEYMAP_RECORD_CRC_OFFSET: usize = KEYMAP_RECORD_LEN - size_of::<u32>();
 pub struct EncodedKeymap {
     bytes: [u8; KEYMAP_PAYLOAD_MAX_LEN],
     len: u8,
+}
+
+/// An encoded source-slot keymap with a fixed backing array.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EncodedSourceKeymap {
+    bytes: [u8; SOURCE_KEYMAP_PAYLOAD_MAX_LEN],
+    len: u8,
+}
+
+impl EncodedSourceKeymap {
+    /// Returns the meaningful bytes to send through the configuration transfer.
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+
+    /// Returns the meaningful wire length.
+    pub const fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// Returns whether the encoded source-keymap payload has no bytes.
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 }
 
 impl EncodedKeymap {
@@ -71,6 +107,19 @@ pub enum KeymapPayloadError {
     Keymap(KeymapError),
 }
 
+/// Why a source-slot keymap payload was rejected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceKeymapPayloadError {
+    /// The payload length does not match its declared rule count.
+    Length(usize),
+    /// The payload version is not understood.
+    Version(u8),
+    /// The source slot is outside the four BLE plus one virtual slots.
+    SourceSlot(u8),
+    /// The embedded rules are invalid.
+    Payload(KeymapPayloadError),
+}
+
 /// Why a persisted keymap record was rejected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeymapRecordError {
@@ -93,6 +142,8 @@ pub enum KeymapRecordError {
     PayloadLength(u8),
     /// The embedded payload is invalid.
     Payload(KeymapPayloadError),
+    /// The source-slot record names a slot outside the fixed source table.
+    SourceSlot(u8),
 }
 
 /// Encodes a keymap into the versioned transfer payload.
@@ -164,6 +215,64 @@ pub fn decode_keymap_payload(bytes: &[u8]) -> Result<Keymap, KeymapPayloadError>
     Ok(keymap)
 }
 
+/// Encodes a keymap payload tied to one registered or virtual source slot.
+pub fn encode_source_keymap_payload(
+    slot: u8,
+    keymap: &Keymap,
+) -> Result<EncodedSourceKeymap, SourceKeymapPayloadError> {
+    if usize::from(slot) >= SOURCE_SLOT_COUNT {
+        return Err(SourceKeymapPayloadError::SourceSlot(slot));
+    }
+    let mut encoded = EncodedSourceKeymap {
+        bytes: [0; SOURCE_KEYMAP_PAYLOAD_MAX_LEN],
+        len: (SOURCE_KEYMAP_PAYLOAD_HEADER_LEN + keymap.len() * KEYMAP_RULE_WIRE_LEN) as u8,
+    };
+    encoded.bytes[0] = SOURCE_KEYMAP_PAYLOAD_VERSION;
+    encoded.bytes[1] = slot;
+    encoded.bytes[2] = keymap.len() as u8;
+    for index in 0..keymap.len() {
+        let rule = keymap
+            .rule(index)
+            .expect("keymap length guarantees every encoded rule exists");
+        let offset = SOURCE_KEYMAP_PAYLOAD_HEADER_LEN + index * KEYMAP_RULE_WIRE_LEN;
+        encoded.bytes[offset] = rule.input_usage;
+        encoded.bytes[offset + 1] =
+            u8::from(rule.input_shifted) | (u8::from(rule.output_shifted) << 1);
+        encoded.bytes[offset + 2] = rule.output_usage;
+    }
+    Ok(encoded)
+}
+
+/// Decodes a source-slot keymap payload and returns its owner slot.
+pub fn decode_source_keymap_payload(
+    bytes: &[u8],
+) -> Result<(u8, Keymap), SourceKeymapPayloadError> {
+    if bytes.len() < SOURCE_KEYMAP_PAYLOAD_HEADER_LEN {
+        return Err(SourceKeymapPayloadError::Length(bytes.len()));
+    }
+    if bytes[0] != SOURCE_KEYMAP_PAYLOAD_VERSION {
+        return Err(SourceKeymapPayloadError::Version(bytes[0]));
+    }
+    let slot = bytes[1];
+    if usize::from(slot) >= SOURCE_SLOT_COUNT {
+        return Err(SourceKeymapPayloadError::SourceSlot(slot));
+    }
+    let count = usize::from(bytes[2]);
+    let expected_len = SOURCE_KEYMAP_PAYLOAD_HEADER_LEN + count * KEYMAP_RULE_WIRE_LEN;
+    if bytes.len() != expected_len {
+        return Err(SourceKeymapPayloadError::Length(bytes.len()));
+    }
+    let mut legacy_payload = [0; KEYMAP_PAYLOAD_MAX_LEN];
+    legacy_payload[0] = KEYMAP_PAYLOAD_VERSION;
+    legacy_payload[1] = bytes[2];
+    let rule_bytes = &bytes[SOURCE_KEYMAP_PAYLOAD_HEADER_LEN..];
+    legacy_payload[KEYMAP_PAYLOAD_HEADER_LEN..][..rule_bytes.len()].copy_from_slice(rule_bytes);
+    let keymap =
+        decode_keymap_payload(&legacy_payload[..KEYMAP_PAYLOAD_HEADER_LEN + rule_bytes.len()])
+            .map_err(SourceKeymapPayloadError::Payload)?;
+    Ok((slot, keymap))
+}
+
 /// Encodes a keymap into the fixed-size record written to the dedicated page.
 pub fn encode_keymap_record(keymap: &Keymap) -> [u8; KEYMAP_RECORD_LEN] {
     let payload = encode_keymap_payload(keymap);
@@ -175,6 +284,26 @@ pub fn encode_keymap_record(keymap: &Keymap) -> [u8; KEYMAP_RECORD_LEN] {
     let crc = crc32_ieee(&bytes[..KEYMAP_RECORD_CRC_OFFSET]);
     bytes[KEYMAP_RECORD_CRC_OFFSET..].copy_from_slice(&crc.to_le_bytes());
     bytes
+}
+
+/// Encodes one source-slot keymap into a version-2 storage record.
+pub fn encode_source_keymap_record(
+    slot: u8,
+    keymap: &Keymap,
+) -> Result<[u8; KEYMAP_RECORD_LEN], SourceKeymapPayloadError> {
+    let payload = encode_keymap_payload(keymap);
+    if usize::from(slot) >= SOURCE_SLOT_COUNT {
+        return Err(SourceKeymapPayloadError::SourceSlot(slot));
+    }
+    let mut bytes = [0; KEYMAP_RECORD_LEN];
+    bytes[0..4].copy_from_slice(&KEYMAP_MAGIC.to_le_bytes());
+    bytes[4] = SOURCE_KEYMAP_RECORD_VERSION;
+    bytes[5] = payload.len;
+    bytes[6] = slot;
+    bytes[KEYMAP_RECORD_PAYLOAD_OFFSET..][..payload.len()].copy_from_slice(payload.as_slice());
+    let crc = crc32_ieee(&bytes[..KEYMAP_RECORD_CRC_OFFSET]);
+    bytes[KEYMAP_RECORD_CRC_OFFSET..].copy_from_slice(&crc.to_le_bytes());
+    Ok(bytes)
 }
 
 /// Decodes a fixed-size keymap record and its embedded versioned payload.
@@ -222,4 +351,117 @@ pub fn decode_keymap_record(bytes: &[u8]) -> Result<Keymap, KeymapRecordError> {
         &bytes[KEYMAP_RECORD_PAYLOAD_OFFSET..KEYMAP_RECORD_PAYLOAD_OFFSET + payload_len],
     )
     .map_err(KeymapRecordError::Payload)
+}
+
+/// Decodes a version-2 source-slot record and verifies its owner slot.
+pub fn decode_source_keymap_record(bytes: &[u8]) -> Result<(u8, Keymap), KeymapRecordError> {
+    if bytes.len() != KEYMAP_RECORD_LEN {
+        return Err(KeymapRecordError::Length(bytes.len()));
+    }
+    let magic = u32::from_le_bytes(
+        bytes[0..4]
+            .try_into()
+            .expect("a four-byte magic was just sliced from a longer record"),
+    );
+    if magic != KEYMAP_MAGIC {
+        return Err(KeymapRecordError::Empty);
+    }
+    if bytes[4] != SOURCE_KEYMAP_RECORD_VERSION {
+        return Err(KeymapRecordError::Version(bytes[4]));
+    }
+    let slot = bytes[6];
+    if usize::from(slot) >= SOURCE_SLOT_COUNT {
+        return Err(KeymapRecordError::SourceSlot(slot));
+    }
+    let expected = u32::from_le_bytes(
+        bytes[KEYMAP_RECORD_CRC_OFFSET..]
+            .try_into()
+            .expect("a four-byte CRC was just sliced from a longer record"),
+    );
+    let actual = crc32_ieee(&bytes[..KEYMAP_RECORD_CRC_OFFSET]);
+    if expected != actual {
+        return Err(KeymapRecordError::Crc { expected, actual });
+    }
+    let payload_len = usize::from(bytes[5]);
+    if payload_len > KEYMAP_PAYLOAD_MAX_LEN
+        || KEYMAP_RECORD_PAYLOAD_OFFSET + payload_len > KEYMAP_RECORD_CRC_OFFSET
+    {
+        return Err(KeymapRecordError::PayloadLength(bytes[5]));
+    }
+    if bytes[7] != 0
+        || bytes[KEYMAP_RECORD_PAYLOAD_OFFSET + payload_len..KEYMAP_RECORD_CRC_OFFSET]
+            .iter()
+            .any(|byte| *byte != 0)
+    {
+        return Err(KeymapRecordError::Reserved);
+    }
+    let keymap = decode_keymap_payload(
+        &bytes[KEYMAP_RECORD_PAYLOAD_OFFSET..KEYMAP_RECORD_PAYLOAD_OFFSET + payload_len],
+    )
+    .map_err(KeymapRecordError::Payload)?;
+    Ok((slot, keymap))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn custom_keymap() -> Keymap {
+        let mut keymap = Keymap::new();
+        keymap
+            .set_rule(KeymapRule::new(0x04, false, 0x1d, false))
+            .expect("one rule fits in the keymap");
+        keymap
+    }
+
+    #[test]
+    fn source_payload_round_trips_with_its_slot() {
+        let payload = encode_source_keymap_payload(3, &custom_keymap())
+            .expect("slot three is one of the four BLE slots");
+
+        assert_eq!(payload.as_slice(), &[2, 3, 1, 0x04, 0, 0x1d, 0]);
+        assert_eq!(
+            decode_source_keymap_payload(payload.as_slice()),
+            Ok((3, custom_keymap()))
+        );
+    }
+
+    #[test]
+    fn source_payload_rejects_unknown_slot_and_version() {
+        assert_eq!(
+            encode_source_keymap_payload(SOURCE_SLOT_COUNT as u8, &custom_keymap()),
+            Err(SourceKeymapPayloadError::SourceSlot(
+                SOURCE_SLOT_COUNT as u8
+            ))
+        );
+
+        let mut payload =
+            encode_source_keymap_payload(0, &custom_keymap()).expect("slot zero is valid");
+        payload.bytes[0] = SOURCE_KEYMAP_PAYLOAD_VERSION + 1;
+        assert_eq!(
+            decode_source_keymap_payload(payload.as_slice()),
+            Err(SourceKeymapPayloadError::Version(
+                SOURCE_KEYMAP_PAYLOAD_VERSION + 1
+            ))
+        );
+    }
+
+    #[test]
+    fn source_record_round_trips_and_checks_slot_metadata() {
+        let record = encode_source_keymap_record(2, &custom_keymap()).expect("slot two is valid");
+
+        assert_eq!(
+            decode_source_keymap_record(&record),
+            Ok((2, custom_keymap()))
+        );
+
+        let mut corrupt = record;
+        corrupt[6] = SOURCE_SLOT_COUNT as u8;
+        let crc = crc32_ieee(&corrupt[..KEYMAP_RECORD_CRC_OFFSET]);
+        corrupt[KEYMAP_RECORD_CRC_OFFSET..].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(
+            decode_source_keymap_record(&corrupt),
+            Err(KeymapRecordError::SourceSlot(SOURCE_SLOT_COUNT as u8))
+        );
+    }
 }

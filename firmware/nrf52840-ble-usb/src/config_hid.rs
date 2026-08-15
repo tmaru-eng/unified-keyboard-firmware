@@ -4,12 +4,12 @@
 //! USB-only milestone binary and the S140 bridge share one host-tested
 //! definition. Only the side effect — resetting the MCU — stays in the binary.
 
-use crate::diagnostics_report::KEYMAP_CHUNK_COUNT_MAX;
+use crate::diagnostics_report::{KEYMAP_CHUNK_COUNT_MAX, SOURCE_KEYMAP_CHUNK_COUNT_MAX};
 use crate::uf2_reset::{
     CONFIG_REPORT_ID, CONFIG_REPORT_LEN, INJECTED_REPORT_LEN, RESET_INTO_BOOTSEL, ResetReportError,
     UKF_INJECT_SOURCE_REPORT, UKF_SELECT_KEYMAP, UKF_SELECT_PANIC_CHUNK, UKF_SELECT_SOURCE,
-    UKF_SET_PAIRING_METHOD, UKF_SET_PAIRING_MODE, UKF_WRITE_BEGIN, UKF_WRITE_CHUNK,
-    UKF_WRITE_COMMIT, normalize_reset_report, parse_config_report,
+    UKF_SELECT_SOURCE_KEYMAP, UKF_SET_PAIRING_METHOD, UKF_SET_PAIRING_MODE, UKF_WRITE_BEGIN,
+    UKF_WRITE_CHUNK, UKF_WRITE_COMMIT, normalize_reset_report, parse_config_report,
 };
 use ukf_core::SOURCE_SLOT_COUNT;
 
@@ -90,6 +90,13 @@ pub enum ConfigRequest {
     SelectSource(u8),
     /// Selects the keymap payload chunk returned by the next diagnostics read.
     SelectKeymapChunk(u8),
+    /// Selects one source-slot keymap chunk returned by the next read.
+    SelectSourceKeymapChunk {
+        /// Source slot owning the keymap.
+        slot: u8,
+        /// Chunk index within that keymap payload.
+        chunk: u8,
+    },
     /// The report addressed this interface but failed validation.
     Rejected(ResetReportError),
 }
@@ -127,6 +134,20 @@ pub fn classify_feature_report(report_id: u8, data: &[u8]) -> ConfigRequest {
                 ConfigRequest::Rejected(ResetReportError::KeymapChunk(frame.data[0]))
             } else {
                 ConfigRequest::SelectKeymapChunk(frame.data[0])
+            }
+        }
+        UKF_SELECT_SOURCE_KEYMAP => {
+            if frame.data[2..].iter().any(|byte| *byte != 0) {
+                ConfigRequest::Rejected(ResetReportError::Reserved)
+            } else if usize::from(frame.data[0]) >= SOURCE_SLOT_COUNT {
+                ConfigRequest::Rejected(ResetReportError::SourceKeymapSlot(frame.data[0]))
+            } else if frame.data[1] >= SOURCE_KEYMAP_CHUNK_COUNT_MAX {
+                ConfigRequest::Rejected(ResetReportError::KeymapChunk(frame.data[1]))
+            } else {
+                ConfigRequest::SelectSourceKeymapChunk {
+                    slot: frame.data[0],
+                    chunk: frame.data[1],
+                }
             }
         }
         UKF_SET_PAIRING_MODE => ConfigRequest::SetPairingMode(frame.data[0] != 0),

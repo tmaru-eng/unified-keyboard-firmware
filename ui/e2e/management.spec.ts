@@ -1,6 +1,20 @@
 import { expect, test } from '@playwright/test';
 
 test.describe('管理WebUIのシミュレーション総合経路', () => {
+  test('初期画面は未接続として表示し、シミュレーション値を表示しない', async ({ page }) => {
+    await page.goto('/');
+
+    await expect(page.locator('.context-badge')).toHaveText('未接続');
+    await expect(page.getByRole('region', { name: '接続状況' })).toContainText('接続中のソース0');
+    await expect(page.getByRole('region', { name: '登録状況' })).toContainText('登録済み0 / 4');
+    await expect(page.getByText('Bluetooth Keyboard')).not.toBeVisible();
+    await expect(page.getByText(/SIMULATED/)).not.toBeVisible();
+
+    await page.getByRole('button', { name: '診断', exact: true }).click();
+    await expect(page.getByText('ブリッジ未接続です。実機またはシミュレーションに接続すると、診断値を表示します。')).toBeVisible();
+    await expect(page.getByText(/SIMULATED OUTPUT/)).not.toBeVisible();
+  });
+
   test('未接続のデモからシミュレーション出力を診断できる', async ({ page }) => {
     await page.goto('/');
 
@@ -21,6 +35,10 @@ test.describe('管理WebUIのシミュレーション総合経路', () => {
     await page.getByRole('button', { name: 'キーマップ', exact: true }).click();
     await expect(page.getByRole('heading', { name: '固定キーマップ' })).toBeVisible();
     await expect(page.getByText('保存先: シミュレーション')).toBeVisible();
+    const sourceSelector = page.getByLabel('編集対象ソース');
+    await expect(sourceSelector).toBeEnabled();
+    await expect(sourceSelector.locator('option')).toHaveCount(2);
+    await sourceSelector.selectOption('4');
     await page.getByRole('button', { name: 'キーマップを読み込む' }).click();
     await expect(page.getByText('0/32ルール・保存済み')).toBeVisible();
     await expect(page.getByRole('heading', { name: 'ビジュアルキーマップ' })).toBeVisible();

@@ -15,6 +15,7 @@ import { SimulatedBridge } from './simulatedBridge';
 import {
   type ConfigHidDevice,
   readKeymap as readPhysicalKeymap,
+  readSourceKeymap as readPhysicalSourceKeymap,
   readSource,
   readSecurity,
   readSources,
@@ -25,6 +26,7 @@ import {
   setPairingMethod,
   setPairingMode,
   writeKeymap as writePhysicalKeymap,
+  writeSourceKeymap as writePhysicalSourceKeymap,
   writeSourceProfile as writePhysicalSourceProfile,
 } from './webhid';
 import type { Profile } from './profile';
@@ -41,6 +43,8 @@ export interface BridgeHardware {
   sources: SourceBlock[];
   /** Active fixed-capacity keymap after an explicit read. */
   keymap: KeymapRule[] | null;
+  /** Source-specific keymaps after explicit reads, keyed by registration slot. */
+  keymaps: Partial<Record<number, KeymapRule[]>>;
   /** Whether a connection attempt is in flight. */
   connecting: boolean;
   /** Whether a read is in flight. */
@@ -58,6 +62,10 @@ export interface BridgeHardware {
   readKeymap(): Promise<KeymapRule[]>;
   /** Writes a fixed-capacity keymap and reads it back. */
   writeKeymap(rules: readonly KeymapRule[]): Promise<void>;
+  /** Reads one source-specific keymap from target 6. */
+  readSourceKeymap(slot: number): Promise<KeymapRule[]>;
+  /** Writes one source-specific keymap to target 6 and verifies readback. */
+  writeSourceKeymap(slot: number, rules: readonly KeymapRule[]): Promise<void>;
   /** Queues a display-name change for one registered BLE source. */
   renameBond(slot: number, name: string): Promise<void>;
   /** Queues deletion of one registered BLE source. */
@@ -112,6 +120,7 @@ export function useBridgeHardware(live: boolean): BridgeHardware {
   const [security, setSecurity] = useState<SecurityBlock | null>(null);
   const [sources, setSources] = useState<SourceBlock[]>([]);
   const [keymap, setKeymap] = useState<KeymapRule[] | null>(null);
+  const [keymaps, setKeymaps] = useState<Partial<Record<number, KeymapRule[]>>>({});
   const [simulated, setSimulated] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [reading, setReading] = useState(false);
@@ -148,6 +157,7 @@ export function useBridgeHardware(live: boolean): BridgeHardware {
     setError(null);
     try {
       setKeymap(null);
+      setKeymaps({});
       setDevice(await requestConfigDevice());
       setSimulated(false);
     } catch (cause) {
@@ -162,6 +172,7 @@ export function useBridgeHardware(live: boolean): BridgeHardware {
     const bridge = new SimulatedBridge();
     await bridge.open();
     setKeymap(null);
+    setKeymaps({});
     setDevice(bridge);
     setSimulated(true);
   }, []);
@@ -381,12 +392,79 @@ export function useBridgeHardware(live: boolean): BridgeHardware {
     }
   }, [device]);
 
+
+  const readSourceKeymap = useCallback(async (slot: number): Promise<KeymapRule[]> => {
+    if (!device) {
+      throw new Error('bridge is not connected');
+    }
+    if (busy.current) {
+      throw new Error('bridge operation is already in progress');
+    }
+    busy.current = true;
+    setReading(true);
+    try {
+      const rules = await readPhysicalSourceKeymap(device, slot);
+      setKeymaps((current) => ({ ...current, [slot]: rules }));
+      if (slot === 0) {
+        setKeymap(rules);
+      }
+      setError(null);
+      return rules;
+    } catch (cause) {
+      setError(message(cause));
+      throw cause;
+    } finally {
+      busy.current = false;
+      setReading(false);
+    }
+  }, [device]);
+
+  const writeSourceKeymap = useCallback(async (
+    slot: number,
+    rules: readonly KeymapRule[],
+  ): Promise<void> => {
+    if (!device) {
+      throw new Error('bridge is not connected');
+    }
+    if (busy.current) {
+      throw new Error('bridge operation is already in progress');
+    }
+    busy.current = true;
+    setReading(true);
+    try {
+      const transfer = await writePhysicalSourceKeymap(device, slot, rules);
+      if (transfer.state !== 2 || transfer.lastError !== 0) {
+        throw new Error(`source keymap transfer was not accepted: ${transfer.summary}`);
+      }
+      for (let attempt = 0; attempt < KEYMAP_READBACK_ATTEMPTS; attempt += 1) {
+        const actual = await readPhysicalSourceKeymap(device, slot);
+        if (keymapsEqual(actual, rules)) {
+          setKeymaps((current) => ({ ...current, [slot]: actual }));
+          if (slot === 0) {
+            setKeymap(actual);
+          }
+          setError(null);
+          return;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, KEYMAP_READBACK_DELAY_MS));
+      }
+      throw new Error('source keymap readback did not converge');
+    } catch (cause) {
+      setError(message(cause));
+      throw cause;
+    } finally {
+      busy.current = false;
+      setReading(false);
+    }
+  }, [device]);
+
   const disconnect = useCallback(() => {
     setDevice(null);
     setStatus(null);
     setSecurity(null);
     setSources([]);
     setKeymap(null);
+    setKeymaps({});
     setSimulated(false);
   }, []);
 
@@ -408,6 +486,7 @@ export function useBridgeHardware(live: boolean): BridgeHardware {
     security,
     sources,
     keymap,
+    keymaps,
     connecting,
     reading,
     error,
@@ -418,6 +497,8 @@ export function useBridgeHardware(live: boolean): BridgeHardware {
     writeSourceProfile,
     readKeymap,
     writeKeymap,
+    readSourceKeymap,
+    writeSourceKeymap,
     renameBond,
     deleteBond,
     simulated,
