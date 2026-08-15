@@ -1781,7 +1781,7 @@ dependencies = [
  "embassy-executor",
  "embassy-futures",
  "embassy-nrf",
- "embassy-sync 0.5.0",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "embassy-usb",
  "embedded-io 0.7.1",
