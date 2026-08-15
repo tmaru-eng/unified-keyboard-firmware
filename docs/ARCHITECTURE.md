@@ -3,6 +3,9 @@
 入力・変換・出力の意味論は`crates/ukf-core`に集め、BLE、USB、保存、ブラウザはアダプタ
 として分離します。
 
+設定と実行モデルもUKF独自の契約です。ZMK/QMKとの実行互換を目標にせず、将来の設定取り込みは
+外部形式をUKFの正規モデルへ変換する境界アダプタとして扱います。
+
 ```text
 BLE HOGP ─────┐
               ├─ source adapter ─> ukf-core ─> USB HID output
@@ -23,3 +26,4 @@ Web UI ─> BridgeDevice ─> WebHID configuration adapter
 - USB Host、マトリクススキャン、split keyboard、3本以上のBLE、NKRO、mouse、consumer、
   pointing deviceは未対応。
 - WebHID設定は設定usageと許可済みvendor/product identityの両方を検証します。
+- ZMK/QMK設定のimporterは現行版にはなく、未対応の項目を黙って捨てる変換は行いません。

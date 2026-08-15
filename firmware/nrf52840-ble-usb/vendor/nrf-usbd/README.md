@@ -24,5 +24,5 @@ This trait declares all the peripheral properties that may vary from one device 
 
 See the [`nrf-hal`](https://github.com/nrf-rs/nrf-hal) for the reference HAL implementation.
 
-See the [`example`](./example) directory for an example on how to use it standalone without a HAL.
-This is discouraged, the recommended usage is through `nrf-hal`.
+The standalone example is not vendored in this snapshot. Standalone use without a HAL is
+discouraged; the recommended usage is through `nrf-hal`.
