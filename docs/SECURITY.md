@@ -1,12 +1,23 @@
 # Security and device boundaries
 
-- PC側に常駐プロセス、入力フック、キーボードドライバを要求しません。
-- WebHIDは設定用usageに加えて、許可されたbridge vendor/product identityだけを受け入れます。
-- 複数候補、未知のdevice identity、identity欠落は推測で選択しません。
-- pairing modeは明示的な操作で開き、通常の再接続では既存のbondだけを対象にします。
-- 設定HIDのACKはUSB transportの受理を示すだけで、無線側のflash永続化完了を示しません。
-- BLE動作中のflash erase/writeは行わず、設定は安全な静穏境界へ保留します。
+The bridge handles keystrokes and pairing material, so configuration access is
+deliberately narrow. The Web UI accepts only the expected vendor configuration HID
+interface and validates report identity, length, version, reserved bytes, and CRC.
 
-これは公開配布物の設計説明であり、特定の脅威モデルに対する認証やセキュリティ保証では
-ありません。問題を見つけた場合は、公開issueへ秘密情報やpairing keyを貼らず、プロジェクト
-の報告窓口へ連絡してください。
+The bridge does not require a resident PC process, input hook, or keyboard driver.
+Pairing is explicit. Do not leave the pairing window open, and do not publish BLE
+addresses, IRKs, pairing keys, private logs, host identifiers, or local paths in
+Issues, bug reports, or public documentation.
+
+The simulation is not a security boundary and does not connect to a physical
+keyboard. It must be clearly labeled and is shown only after an explicit user
+action or a demo scenario.
+
+Configuration HID acknowledgements indicate transport acceptance, not necessarily
+that a wireless-side flash write has completed. The firmware defers persistent
+changes until a safe radio boundary and must not erase or write flash while a BLE
+link is active.
+
+Report a security problem privately using the project's private repository process.
+Do not put pairing material or hardware logs in a public issue. See [日本語 security
+guidance](SECURITY.ja.md).

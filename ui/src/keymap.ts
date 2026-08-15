@@ -7,8 +7,11 @@
  */
 
 export const KEYMAP_PAYLOAD_VERSION = 1;
+/** Version of the source-slot keymap payload introduced after target 5. */
+export const KEYMAP_SOURCE_PAYLOAD_VERSION = 2;
 export const KEYMAP_RULE_WIRE_LEN = 4;
 export const KEYMAP_PAYLOAD_HEADER_LEN = 2;
+export const KEYMAP_SOURCE_PAYLOAD_HEADER_LEN = 3;
 export const KEYMAP_RULE_CAPACITY = 32;
 export const KEYMAP_PAYLOAD_MAX_LEN =
   KEYMAP_PAYLOAD_HEADER_LEN + KEYMAP_RULE_CAPACITY * KEYMAP_RULE_WIRE_LEN;
@@ -22,6 +25,17 @@ export interface KeymapRule {
   inputShifted: boolean;
   outputUsage: number;
   outputShifted: boolean;
+}
+
+export interface SourceKeymapPayload {
+  slot: number;
+  rules: KeymapRule[];
+}
+
+function assertSourceSlot(slot: number): void {
+  if (!Number.isInteger(slot) || slot < 0 || slot >= 5) {
+    throw new Error(`source slot must be an integer from 0 through 4: ${slot}`);
+  }
 }
 
 function assertByte(value: number, label: string, allowZero = true): void {
@@ -108,4 +122,76 @@ export function decodeKeymapPayload(payload: Uint8Array): KeymapRule[] {
     rules.push(rule);
   }
   return rules;
+}
+
+/** Encodes a keymap payload owned by one registered or virtual source slot. */
+export function encodeSourceKeymapPayload(
+  slot: number,
+  rules: readonly KeymapRule[],
+): Uint8Array {
+  assertSourceSlot(slot);
+  if (rules.length > KEYMAP_RULE_CAPACITY) {
+    throw new Error(`keymap cannot contain more than ${KEYMAP_RULE_CAPACITY} rules.`);
+  }
+  const payload = new Uint8Array(
+    KEYMAP_SOURCE_PAYLOAD_HEADER_LEN + rules.length * KEYMAP_RULE_WIRE_LEN,
+  );
+  payload[0] = KEYMAP_SOURCE_PAYLOAD_VERSION;
+  payload[1] = slot;
+  payload[2] = rules.length;
+  rules.forEach((rule, index) => {
+    assertRule(rule, index);
+    if (duplicateOf(rule, rules.slice(0, index))) {
+      throw new Error(`rules[${index}] duplicates an input usage and shift state.`);
+    }
+    const offset = KEYMAP_SOURCE_PAYLOAD_HEADER_LEN + index * KEYMAP_RULE_WIRE_LEN;
+    payload[offset] = rule.inputUsage;
+    payload[offset + 1] =
+      (rule.inputShifted ? INPUT_SHIFTED : 0) | (rule.outputShifted ? OUTPUT_SHIFTED : 0);
+    payload[offset + 2] = rule.outputUsage;
+  });
+  return payload;
+}
+
+/** Decodes a keymap payload and verifies that its source slot is explicit. */
+export function decodeSourceKeymapPayload(payload: Uint8Array): SourceKeymapPayload {
+  if (payload.length < KEYMAP_SOURCE_PAYLOAD_HEADER_LEN) {
+    throw new Error(`source keymap payload is too short: ${payload.length}.`);
+  }
+  if (payload[0] !== KEYMAP_SOURCE_PAYLOAD_VERSION) {
+    throw new Error(`unsupported source keymap payload version ${payload[0]}.`);
+  }
+  const slot = payload[1];
+  assertSourceSlot(slot);
+  const count = payload[2];
+  if (count > KEYMAP_RULE_CAPACITY) {
+    throw new Error(`source keymap contains too many rules: ${count}.`);
+  }
+  const expectedLength = KEYMAP_SOURCE_PAYLOAD_HEADER_LEN + count * KEYMAP_RULE_WIRE_LEN;
+  if (payload.length !== expectedLength) {
+    throw new Error(`source keymap payload length must be ${expectedLength}: ${payload.length}.`);
+  }
+  const rules: KeymapRule[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const offset = KEYMAP_SOURCE_PAYLOAD_HEADER_LEN + index * KEYMAP_RULE_WIRE_LEN;
+    const flags = payload[offset + 1];
+    if ((flags & ~RULE_FLAGS_MASK) !== 0) {
+      throw new Error(`rules[${index}] contains unknown flags ${flags}.`);
+    }
+    if (payload[offset + 3] !== 0) {
+      throw new Error(`rules[${index}] has a non-zero reserved byte.`);
+    }
+    const rule = {
+      inputUsage: payload[offset],
+      inputShifted: (flags & INPUT_SHIFTED) !== 0,
+      outputUsage: payload[offset + 2],
+      outputShifted: (flags & OUTPUT_SHIFTED) !== 0,
+    } satisfies KeymapRule;
+    assertRule(rule, index);
+    if (duplicateOf(rule, rules)) {
+      throw new Error(`rules[${index}] duplicates an input usage and shift state.`);
+    }
+    rules.push(rule);
+  }
+  return { slot, rules };
 }

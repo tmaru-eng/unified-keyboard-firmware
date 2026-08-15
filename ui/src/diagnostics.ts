@@ -43,12 +43,22 @@ export const SELECT_KEYMAP = 0xf9;
 export const UKF_SELECT_SOURCE = 107;
 /** Command selecting a keymap chunk for the next diagnostics read. */
 export const UKF_SELECT_KEYMAP = 108;
+/** Command selecting a source-slot keymap chunk for the next diagnostics read. */
+export const UKF_SELECT_SOURCE_KEYMAP = 109;
 /** Bytes of keymap payload carried by one diagnostics block. */
 export const KEYMAP_CHUNK_DATA_LEN = 21;
 /** Maximum number of diagnostics blocks for the fixed keymap payload. */
 export const KEYMAP_CHUNK_COUNT_MAX = 7;
 /** Version of the keymap diagnostics block. */
 export const KEYMAP_REPORT_VERSION = 1;
+/** Bytes of source-slot keymap payload carried by one diagnostics block. */
+export const SOURCE_KEYMAP_CHUNK_DATA_LEN = 20;
+/** Maximum number of source-slot keymap diagnostics blocks. */
+export const SOURCE_KEYMAP_CHUNK_COUNT_MAX = 7;
+/** Version of a source-slot keymap diagnostics block. */
+export const SOURCE_KEYMAP_REPORT_VERSION = 2;
+/** Maximum source-slot keymap payload length. */
+export const SOURCE_KEYMAP_PAYLOAD_MAX_LEN = 3 + 32 * 4;
 /** Version of the source record carried inside a source block. */
 export const SOURCE_RECORD_VERSION = 1;
 /** Maximum fixed-width source name bytes. */
@@ -395,6 +405,25 @@ export function buildSelectKeymapChunk(chunk: number): Uint8Array {
   return bytes;
 }
 
+/** Builds the selector for one source slot's keymap chunk. */
+export function buildSelectSourceKeymapChunk(slot: number, chunk: number): Uint8Array {
+  if (!Number.isInteger(slot) || slot < 0 || slot >= 5) {
+    throw new RangeError(`source keymap slot must be an integer from 0 through 4: ${slot}`);
+  }
+  if (!Number.isInteger(chunk) || chunk < 0 || chunk >= SOURCE_KEYMAP_CHUNK_COUNT_MAX) {
+    throw new RangeError(
+      `source keymap chunk must be an integer from 0 through ${SOURCE_KEYMAP_CHUNK_COUNT_MAX - 1}: ${chunk}`,
+    );
+  }
+  const bytes = new Uint8Array(CONFIG_REPORT_LEN);
+  bytes[0] = CONFIG_PROTOCOL_VERSION;
+  bytes[1] = UKF_SELECT_SOURCE_KEYMAP;
+  bytes[2] = slot;
+  bytes[3] = chunk;
+  new DataView(bytes.buffer).setUint32(28, crc32Ieee(bytes.subarray(0, 28)), true);
+  return bytes;
+}
+
 /** One chunk of the active keymap payload. */
 export interface KeymapChunkBlock {
   kind: number;
@@ -403,6 +432,7 @@ export interface KeymapChunkBlock {
   chunkCount: number;
   payloadLength: number;
   data: Uint8Array;
+  sourceSlot?: number;
 }
 
 /** Decodes and strictly validates one keymap payload chunk. */
@@ -444,6 +474,56 @@ export function decodeKeymapChunk(payload: Uint8Array): KeymapChunkBlock {
     chunkCount,
     payloadLength,
     data: payload.slice(7, 7 + meaningful),
+  };
+}
+
+/** Decodes one source-slot keymap payload chunk. */
+export function decodeSourceKeymapChunk(payload: Uint8Array): KeymapChunkBlock {
+  assertHeader(payload, KEYMAP_KIND);
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const version = payload[2];
+  if (version !== SOURCE_KEYMAP_REPORT_VERSION) {
+    throw new DiagnosticsError(`unsupported source keymap report version ${version}`);
+  }
+  const chunkIndex = payload[3];
+  const chunkCount = payload[4];
+  if (
+    chunkCount === 0 ||
+    chunkCount > SOURCE_KEYMAP_CHUNK_COUNT_MAX ||
+    chunkIndex >= chunkCount
+  ) {
+    throw new DiagnosticsError(`invalid source keymap chunk ${chunkIndex}/${chunkCount}`);
+  }
+  const payloadLength = view.getUint16(5, true);
+  if (payloadLength < 3 || payloadLength > SOURCE_KEYMAP_PAYLOAD_MAX_LEN) {
+    throw new DiagnosticsError(`invalid source keymap payload length ${payloadLength}`);
+  }
+  const sourceSlot = payload[7];
+  if (sourceSlot >= 5) {
+    throw new DiagnosticsError(`unknown source keymap slot ${sourceSlot}`);
+  }
+  const expectedChunkCount = Math.ceil(payloadLength / SOURCE_KEYMAP_CHUNK_DATA_LEN);
+  if (chunkCount !== expectedChunkCount) {
+    throw new DiagnosticsError(
+      `source keymap chunk count ${chunkCount} does not match payload length ${payloadLength}`,
+    );
+  }
+  const start = chunkIndex * SOURCE_KEYMAP_CHUNK_DATA_LEN;
+  if (start >= payloadLength) {
+    throw new DiagnosticsError(`source keymap chunk starts beyond payload: ${start}/${payloadLength}`);
+  }
+  const meaningful = Math.min(SOURCE_KEYMAP_CHUNK_DATA_LEN, payloadLength - start);
+  if (payload.subarray(8 + meaningful, 28).some((byte) => byte !== 0)) {
+    throw new DiagnosticsError('source keymap chunk padding is not zero');
+  }
+  return {
+    kind: payload[1],
+    version,
+    chunkIndex,
+    chunkCount,
+    payloadLength,
+    sourceSlot,
+    data: payload.slice(8, 8 + meaningful),
   };
 }
 

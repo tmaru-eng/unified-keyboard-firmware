@@ -29,6 +29,9 @@ import {
   KEYMAP_CHUNK_DATA_LEN,
   KEYMAP_KIND,
   KEYMAP_REPORT_VERSION,
+  SOURCE_KEYMAP_CHUNK_COUNT_MAX,
+  SOURCE_KEYMAP_CHUNK_DATA_LEN,
+  SOURCE_KEYMAP_REPORT_VERSION,
   SELECT_KEYMAP,
   SELECT_SOURCE,
   SOURCE_KIND,
@@ -36,10 +39,11 @@ import {
   TRANSFER_KIND,
   UKF_SELECT_PANIC_CHUNK,
   UKF_SELECT_KEYMAP,
+  UKF_SELECT_SOURCE_KEYMAP,
   UKF_SELECT_SOURCE,
 } from './diagnostics';
-import { TARGET_KEYMAP, TRANSFER_CAPACITY, TRANSFER_CHUNK_BYTES } from './transfer';
-import { decodeKeymapPayload } from './keymap';
+import { TARGET_KEYMAP, TARGET_SOURCE_KEYMAP, TRANSFER_CAPACITY, TRANSFER_CHUNK_BYTES } from './transfer';
+import { decodeKeymapPayload, decodeSourceKeymapPayload } from './keymap';
 import {
   BOND_MANAGEMENT_NAME_LEN,
   BOND_MANAGEMENT_PAYLOAD_LEN,
@@ -64,6 +68,8 @@ const SELECT_STATUS = 0xff;
 const SELECT_SECURITY = 0xfe;
 /** Selector value that returns the transfer block. */
 const SELECT_TRANSFER = 0xfc;
+/** Internal selector value for a source-slot keymap chunk. */
+const SELECT_SOURCE_KEYMAP = 0xf8;
 /** Starts a transfer. */
 const UKF_WRITE_BEGIN = 104;
 /** Carries one slice of it. */
@@ -208,6 +214,12 @@ export class SimulatedBridge implements ConfigHidDevice {
   #selectedSource = 0;
   #selectedKeymapChunk = 0;
   #keymapPayload = Uint8Array.from([1, 0]);
+  #selectedSourceKeymapSlot = 0;
+  #selectedSourceKeymapChunk = 0;
+  #sourceKeymapPayloads = Array.from(
+    { length: 5 },
+    (_, slot) => Uint8Array.from([2, slot, 0]),
+  );
   /**
    * The staging area, mirroring the board's.
    *
@@ -300,6 +312,20 @@ export class SimulatedBridge implements ConfigHidDevice {
         this.#selectedKeymapChunk = payload[2];
         this.#selector = SELECT_KEYMAP;
         return;
+      case UKF_SELECT_SOURCE_KEYMAP:
+        if (payload[2] >= 5) {
+          throw new SimulatedProtocolError(`unknown source keymap slot ${payload[2]}`);
+        }
+        if (payload[3] >= SOURCE_KEYMAP_CHUNK_COUNT_MAX) {
+          throw new SimulatedProtocolError(`unknown source keymap chunk ${payload[3]}`);
+        }
+        if (payload.slice(4, 28).some((byte) => byte !== 0)) {
+          throw new SimulatedProtocolError('source keymap selector reserved bytes must be zero');
+        }
+        this.#selectedSourceKeymapSlot = payload[2];
+        this.#selectedSourceKeymapChunk = payload[3];
+        this.#selector = SELECT_SOURCE_KEYMAP;
+        return;
       case UKF_SET_PAIRING_MODE:
         this.#state.pairingOpen = payload[2] !== 0;
         return;
@@ -347,6 +373,8 @@ export class SimulatedBridge implements ConfigHidDevice {
       bytes = this.#sourceBlock();
     } else if (selector === SELECT_KEYMAP) {
       bytes = this.#keymapBlock();
+    } else if (selector === SELECT_SOURCE_KEYMAP) {
+      bytes = this.#sourceKeymapBlock();
     } else {
       bytes = this.#statusBlock();
     }
@@ -433,7 +461,8 @@ export class SimulatedBridge implements ConfigHidDevice {
       target !== 2 &&
       target !== TARGET_SOURCE_PROFILE &&
       target !== TARGET_BOND_MANAGEMENT &&
-      target !== TARGET_KEYMAP
+      target !== TARGET_KEYMAP &&
+      target !== TARGET_SOURCE_KEYMAP
     ) {
       this.#fail(8);
       return;
@@ -523,6 +552,16 @@ export class SimulatedBridge implements ConfigHidDevice {
       }
       this.#keymapPayload = payload.slice();
     }
+    if (this.#transfer.target === TARGET_SOURCE_KEYMAP) {
+      const payload = this.#transfer.buffer.subarray(0, this.#transfer.receivedLen);
+      try {
+        const decoded = decodeSourceKeymapPayload(payload);
+        this.#sourceKeymapPayloads[decoded.slot] = payload.slice();
+      } catch {
+        this.#fail(3);
+        return;
+      }
+    }
     this.#transfer.state = 2;
     this.#transfer.lastError = 0;
   }
@@ -609,6 +648,28 @@ export class SimulatedBridge implements ConfigHidDevice {
     bytes[4] = chunkCount;
     new DataView(bytes.buffer).setUint16(5, this.#keymapPayload.length, true);
     bytes.set(this.#keymapPayload.subarray(start, end), 7);
+    return sealed(bytes);
+  }
+
+  #sourceKeymapBlock(): Uint8Array {
+    const payload = this.#sourceKeymapPayloads[this.#selectedSourceKeymapSlot];
+    const chunkCount = Math.ceil(payload.length / SOURCE_KEYMAP_CHUNK_DATA_LEN);
+    const start = this.#selectedSourceKeymapChunk * SOURCE_KEYMAP_CHUNK_DATA_LEN;
+    if (start >= payload.length || this.#selectedSourceKeymapChunk >= chunkCount) {
+      throw new SimulatedProtocolError(
+        `source keymap chunk ${this.#selectedSourceKeymapChunk} is out of range`,
+      );
+    }
+    const bytes = new Uint8Array(CONFIG_REPORT_LEN);
+    const end = Math.min(start + SOURCE_KEYMAP_CHUNK_DATA_LEN, payload.length);
+    bytes[0] = CONFIG_PROTOCOL_VERSION;
+    bytes[1] = KEYMAP_KIND;
+    bytes[2] = SOURCE_KEYMAP_REPORT_VERSION;
+    bytes[3] = this.#selectedSourceKeymapChunk;
+    bytes[4] = chunkCount;
+    new DataView(bytes.buffer).setUint16(5, payload.length, true);
+    bytes[7] = this.#selectedSourceKeymapSlot;
+    bytes.set(payload.subarray(start, end), 8);
     return sealed(bytes);
   }
 }

@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  KEYMAP_SOURCE_PAYLOAD_VERSION,
   KEYMAP_PAYLOAD_VERSION,
   decodeKeymapPayload,
+  decodeSourceKeymapPayload,
   encodeKeymapPayload,
+  encodeSourceKeymapPayload,
   type KeymapRule,
 } from './keymap';
 
@@ -68,5 +71,29 @@ describe('the first data-driven keymap payload', () => {
         inputUsage: (index % 0xff) + 1,
       }))),
     ).toThrow(/more than 32/);
+  });
+
+  it('round-trips a keymap tied to a source slot', () => {
+    const payload = encodeSourceKeymapPayload(3, CUSTOM_RULES);
+
+    expect(Array.from(payload)).toEqual([
+      KEYMAP_SOURCE_PAYLOAD_VERSION,
+      3,
+      2,
+      0x04,
+      0,
+      0x05,
+      0,
+      0x1f,
+      0b01,
+      0x2f,
+      0,
+    ]);
+    expect(decodeSourceKeymapPayload(payload)).toEqual({ slot: 3, rules: CUSTOM_RULES });
+  });
+
+  it('rejects source keymap payloads outside the registered and virtual slots', () => {
+    expect(() => encodeSourceKeymapPayload(5, CUSTOM_RULES)).toThrow(/source slot/);
+    expect(() => decodeSourceKeymapPayload(new Uint8Array([KEYMAP_SOURCE_PAYLOAD_VERSION, 5, 0]))).toThrow(/source slot/);
   });
 });

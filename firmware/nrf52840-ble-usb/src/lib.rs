@@ -298,6 +298,11 @@ impl ReportPipeline {
         self.bridge.keymap()
     }
 
+    /// Returns the mapping table assigned to one registered source slot.
+    pub fn source_keymap(&self, source: SourceId) -> Result<Keymap, BridgeError> {
+        self.bridge.source_keymap(source)
+    }
+
     /// Releases the aggregate report, then replaces the live keymap.
     pub fn set_keymap<S: UsbReportSink>(
         &mut self,
@@ -307,6 +312,19 @@ impl ReportPipeline {
         self.release_all(usb)?;
         self.bridge.set_keymap(keymap);
         Ok(())
+    }
+
+    /// Releases the aggregate report, then replaces one source's live keymap.
+    pub fn set_source_keymap<S: UsbReportSink>(
+        &mut self,
+        source: SourceId,
+        keymap: Keymap,
+        usb: &mut S,
+    ) -> Result<(), PipelineError<S::Error>> {
+        self.release_all(usb)?;
+        self.bridge
+            .set_source_keymap(source, keymap)
+            .map_err(PipelineError::Bridge)
     }
 
     /// Parses an eight-byte BLE boot-keyboard payload and forwards its output.

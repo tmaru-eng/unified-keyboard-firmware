@@ -11,8 +11,10 @@ import {
   readSources,
   readStatus,
   readKeymap,
+  readSourceKeymap,
   renameBond,
   writeKeymap,
+  writeSourceKeymap,
   writeSourceProfile,
 } from './webhid';
 
@@ -109,6 +111,18 @@ describe('a bridge that is not there', () => {
     await writeKeymap(bridge, rules);
 
     expect(await readKeymap(bridge)).toEqual(rules);
+  });
+
+  it('keeps source-slot keymaps independent through target 6', async () => {
+    const bridge = new SimulatedBridge();
+    const rules: KeymapRule[] = [
+      { inputUsage: 0x04, inputShifted: false, outputUsage: 0x1d, outputShifted: false },
+    ];
+
+    await writeSourceKeymap(bridge, 4, rules);
+
+    expect(await readSourceKeymap(bridge, 4)).toEqual(rules);
+    expect(await readSourceKeymap(bridge, 0)).toEqual([]);
   });
 
   it('refuses source profile writes for an unregistered bond slot', async () => {

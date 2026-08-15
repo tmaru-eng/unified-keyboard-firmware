@@ -42,6 +42,8 @@ export const TARGET_PROFILE = 2;
 export const TARGET_SOURCE_PROFILE = 3;
 /** The versioned single-layer keymap target. */
 export const TARGET_KEYMAP = 5;
+/** The explicit source-slot keymap target. */
+export const TARGET_SOURCE_KEYMAP = 6;
 
 function sealed(report: Uint8Array): Uint8Array {
   new DataView(report.buffer, report.byteOffset).setUint32(

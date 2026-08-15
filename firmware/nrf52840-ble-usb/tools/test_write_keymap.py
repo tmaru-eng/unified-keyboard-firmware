@@ -9,7 +9,14 @@ from pathlib import Path
 
 from reset_xiao import CONFIG_PROTOCOL_VERSION, CONFIG_REPORT_ID, CONFIG_REPORT_LEN
 from write_config import send_payload
-from write_keymap import DEFAULT_US_JIS_RULES, decode_keymap_payload, encode_keymap_payload, load_payload
+from write_keymap import (
+    DEFAULT_US_JIS_RULES,
+    decode_keymap_payload,
+    decode_source_keymap_payload,
+    encode_keymap_payload,
+    encode_source_keymap_payload,
+    load_payload,
+)
 
 
 class KeymapPayloadTest(unittest.TestCase):
@@ -67,6 +74,21 @@ class KeymapPayloadTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reserved"):
             decode_keymap_payload(bytes(payload))
 
+    def test_source_payload_carries_its_slot_and_uses_version_two(self):
+        rules = [{"input_usage": 4, "input_shifted": False, "output_usage": 5, "output_shifted": True}]
+
+        payload = encode_source_keymap_payload(3, rules)
+
+        self.assertEqual(payload, bytes((2, 3, 1, 4, 2, 5, 0)))
+        self.assertEqual(decode_source_keymap_payload(payload), (3, rules))
+
+    def test_source_payload_rejects_a_different_owner_slot(self):
+        payload = bytearray((2, 1, 0))
+        payload[1] = 5
+
+        with self.assertRaisesRegex(ValueError, "source slot"):
+            decode_source_keymap_payload(bytes(payload))
+
     def test_json_rules_are_loaded_as_the_same_payload(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "keymap.json"
@@ -119,6 +141,34 @@ class KeymapPayloadTest(unittest.TestCase):
         self.assertEqual(device.packets[-2][1:3], bytes((CONFIG_PROTOCOL_VERSION, 106)))
         self.assertEqual(device.packets[0][3], 5)
         self.assertEqual(device.packets[-2][3], 5)
+
+    def test_transfer_writer_uses_target_6_for_source_keymap(self):
+        class Device:
+            def __init__(self):
+                self.packets = []
+
+            def send_feature_report(self, packet: bytes) -> int:
+                self.packets.append(packet)
+                return CONFIG_REPORT_LEN + 1
+
+            def get_feature_report(self, report_id: int, length: int) -> bytes:
+                payload = bytearray(CONFIG_REPORT_LEN)
+                payload[0] = CONFIG_PROTOCOL_VERSION
+                payload[1] = 5
+                payload[2] = 2
+                payload[4] = 6
+                payload[28:] = struct.pack(
+                    "<I", zlib.crc32(payload[:28]) & 0xFFFFFFFF
+                )
+                return bytes([CONFIG_REPORT_ID]) + bytes(payload)
+
+        device = Device()
+        send_payload(device, bytes((2, 3, 0)), target=6)
+
+        self.assertEqual(device.packets[0][1:3], bytes((CONFIG_PROTOCOL_VERSION, 104)))
+        self.assertEqual(device.packets[-2][1:3], bytes((CONFIG_PROTOCOL_VERSION, 106)))
+        self.assertEqual(device.packets[0][3], 6)
+        self.assertEqual(device.packets[-2][3], 6)
 
 
 if __name__ == "__main__":

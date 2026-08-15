@@ -14,6 +14,8 @@ pub const TARGET_SOURCE_PROFILE: u8 = 3;
 pub const TARGET_BOND_MANAGEMENT: u8 = 4;
 /// Target carrying the versioned fixed-capacity keymap payload.
 pub const TARGET_KEYMAP: u8 = 5;
+/// Target carrying one source slot's versioned keymap payload.
+pub const TARGET_SOURCE_KEYMAP: u8 = 6;
 
 /// State of a configuration transfer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -278,5 +280,6 @@ const fn valid_target(target: u8) -> bool {
             | TARGET_SOURCE_PROFILE
             | TARGET_BOND_MANAGEMENT
             | TARGET_KEYMAP
+            | TARGET_SOURCE_KEYMAP
     )
 }

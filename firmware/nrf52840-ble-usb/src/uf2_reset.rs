@@ -52,6 +52,8 @@ pub const UKF_WRITE_COMMIT: u8 = UKF_COMMAND_BASE + 6;
 pub const UKF_SELECT_SOURCE: u8 = UKF_COMMAND_BASE + 7;
 /// Selects a keymap payload chunk returned by the next diagnostics read.
 pub const UKF_SELECT_KEYMAP: u8 = UKF_COMMAND_BASE + 8;
+/// Selects a source-slot keymap payload chunk returned by the next read.
+pub const UKF_SELECT_SOURCE_KEYMAP: u8 = UKF_COMMAND_BASE + 9;
 /// GPREGRET value recognized by the UF2 bootloader.
 pub const UF2_RESET_MAGIC: u8 = 0x57;
 
@@ -88,6 +90,8 @@ pub enum ResetReportError {
     SourceSlot(u8),
     /// A keymap selector named a chunk outside the fixed diagnostics capacity.
     KeymapChunk(u8),
+    /// A source-keymap selector named a slot outside the fixed source capacity.
+    SourceKeymapSlot(u8),
 }
 
 /// Computes reflected CRC-32/ISO-HDLC (also called CRC-32/IEEE).

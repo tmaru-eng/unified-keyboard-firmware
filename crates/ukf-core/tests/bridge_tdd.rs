@@ -239,3 +239,48 @@ fn keymap_rejects_an_empty_input_and_overflow_without_partial_rules() {
     );
     assert_eq!(keymap.len(), KEYMAP_RULE_CAPACITY);
 }
+
+#[test]
+fn each_source_uses_its_own_keymap() {
+    let mut bridge = BridgeEngine::new();
+    for source in [SourceId(0), SourceId(1)] {
+        bridge
+            .attach(
+                source,
+                InputTransport::Ble,
+                BridgeProfile {
+                    us_to_jis: true,
+                    ..BridgeProfile::NONE
+                },
+            )
+            .unwrap();
+    }
+
+    let mut source_zero_map = Keymap::new();
+    source_zero_map
+        .set_rule(KeymapRule::new(0x04, false, 0x1e, false))
+        .unwrap();
+    let mut source_one_map = Keymap::new();
+    source_one_map
+        .set_rule(KeymapRule::new(0x04, false, 0x1f, false))
+        .unwrap();
+    bridge
+        .set_source_keymap(SourceId(0), source_zero_map)
+        .unwrap();
+    bridge
+        .set_source_keymap(SourceId(1), source_one_map)
+        .unwrap();
+
+    let source_zero = bridge
+        .submit_boot_report(SourceId(0), report(0, [0x04, 0, 0, 0, 0, 0]))
+        .unwrap();
+    bridge.detach(SourceId(0)).unwrap();
+    let source_one = bridge
+        .submit_boot_report(SourceId(1), report(0, [0x04, 0, 0, 0, 0, 0]))
+        .unwrap();
+
+    assert_eq!(source_zero.report, report(0, [0x1e, 0, 0, 0, 0, 0]));
+    assert_eq!(source_one.report, report(0, [0x1f, 0, 0, 0, 0, 0]));
+    assert_eq!(bridge.source_keymap(SourceId(0)).unwrap(), source_zero_map);
+    assert_eq!(bridge.source_keymap(SourceId(1)).unwrap(), source_one_map);
+}

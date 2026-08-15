@@ -1,43 +1,28 @@
 # Configuration model
 
-## UKFが正規の設定モデルを持つ
+UKF uses versioned, bounded configuration records. A bridge has four registered
+BLE source slots (`0..3`) and one virtual source slot (`4`). Profiles and keymaps are
+attached to source slots; the current keymap editor provides a fixed single-layer keymap.
 
-Unified Keyboard Firmwareは、特定の既存ファームウェアを実行する互換層ではありません。
-入力デバイス、ソース、プロファイル、キーマップ、保存、転送をUKF独自のバージョン付き
-契約として定義し、BLE-to-USBブリッジ、将来のUSB Host、自作キーボード本体で同じモデルを
-使います。キーボードを最初の製品対象とし、マウスやトラックボールなどのポインティング
-デバイスは将来の拡張対象です。
+The compatibility profile can convert ANSI US symbols to the host's JIS layout,
+map Caps Lock to Control, and swap Alt/GUI. Each source has its own profile and
+keymap state. The editor selects a registered BLE slot or the virtual slot, then
+reads, edits, and saves only that source's keymap. A change for one source is not
+silently copied to another source.
 
-## 現行ブリッジで扱うもの
+The current keymap wire target is a versioned single-layer keymap with up to 32
+rules. The legacy global target remains available for compatibility; layered
+actions, transparent keys, Mod-Tap, Tap-Hold, combos, macros, and NKRO are not part
+of this contract.
 
-- 4つの登録BLE slotと1つの仮想入力slot
-- 入力元ごとのUS→JIS、Caps→Ctrl、Alt/GUIプロファイル
-- 固定32ルール・単一レイヤーのキーマップ
-- 設定HIDによる診断、分割転送、CRC、保存状態の確認
+Settings travel through the 32-byte vendor configuration HID protocol using a
+length-first transfer, numbered chunks, and an explicit CRC-checked commit. A
+partial or invalid transfer is not applied. Source link control is separate:
+disconnect and reconnect commands change runtime link permission in RAM and do
+not write flash. Pairing removal deletes the bond, name, and source settings via
+the existing quiet-boundary persistence path.
 
-現行版はキーボード入力について、ファームウェアが保存できる項目だけをWeb UIに表示します。
-多層、アクション、Mod-Tap、Tap-Hold、コンボ、マクロ、NKRO、ポインティングデバイスの
-設定はまだこの契約に含めません。
+ZMK and QMK files are not the runtime format. Future importers may accept a
+documented subset, then convert it into UKF's independent versioned model.
 
-## 既存ファームウェアの設定取り込み
-
-ZMKやQMKは、UKFが実行するファームウェアではなく、将来の設定取り込み元です。取り込みを
-実装する場合は、次の境界を通します。
-
-```text
-外部設定ファイル
-    ↓ parser
-UKF独自の設定モデルへ変換
-    ↓ normalize / validate
-ボード・UI共通の設定契約
-    ↓ apply
-ファームウェアまたはシミュレーション
-```
-
-現在の公開版にはZMK/QMK設定取り込み機能はありません。将来のimporterは対応するサブセットを
-明記し、未対応の項目を警告またはエラーにします。設定の意味を黙って変更したり、失われた
-項目を互換と表示したりしません。
-
-取り込み後の正規データは、元の設定ファイルをそのまま保存するのではなく、UKFのバージョン付き
-モデルとして検証・保存します。これにより、ファームウェアやUIが変わっても設定資産を持ち運べる
-共通基盤を目指します。
+- [日本語 configuration](CONFIGURATION.ja.md)

@@ -6,6 +6,7 @@ import {
   SECURITY_KIND,
   STATUS_KIND,
   UKF_SELECT_KEYMAP,
+  UKF_SELECT_SOURCE_KEYMAP,
   UKF_SELECT_PANIC_CHUNK,
 } from './diagnostics';
 import {
@@ -23,6 +24,7 @@ import {
   isConfigInterface,
   readSecurity,
   readKeymap,
+  readSourceKeymap,
   readStatus,
   selectConfigInterface,
 } from './webhid';
@@ -242,5 +244,35 @@ describe('readKeymap', () => {
     expect(rules).toHaveLength(6);
     expect(rules[0]).toEqual({ inputUsage: 0x04, inputShifted: false, outputUsage: 0x05, outputShifted: false });
     expect(device.sent.map(({ data }) => data[2])).toEqual([0, 1]);
+  });
+});
+
+describe('readSourceKeymap', () => {
+  it('selects a source slot and reassembles its version-two payload', async () => {
+    const device = makeDevice([CONFIG_COLLECTION]);
+    const payload = Uint8Array.from([2, 3, 1, 0x04, 0x02, 0x05, 0]);
+    device.sendFeatureReport = vi.fn(async (reportId: number, data: BufferSource) => {
+      const bytes = new Uint8Array(data as ArrayBufferView['buffer']);
+      device.sent.push({ reportId, data: bytes });
+      if (bytes[1] === UKF_SELECT_SOURCE_KEYMAP) {
+        device.reply = block(KEYMAP_KIND, (raw, view) => {
+          raw[2] = 2;
+          raw[3] = 0;
+          raw[4] = 1;
+          view.setUint16(5, payload.length, true);
+          raw[7] = 3;
+          raw.set(payload, 8);
+        });
+      }
+    });
+
+    const rules = await readSourceKeymap(device, 3);
+
+    expect(rules).toEqual([
+      { inputUsage: 0x04, inputShifted: false, outputUsage: 0x05, outputShifted: true },
+    ]);
+    expect(device.sent[0].data[1]).toBe(UKF_SELECT_SOURCE_KEYMAP);
+    expect(device.sent[0].data[2]).toBe(3);
+    expect(device.sent[0].data[3]).toBe(0);
   });
 });

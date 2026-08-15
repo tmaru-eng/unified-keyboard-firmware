@@ -13,6 +13,7 @@ pub struct ConfigurationUpdates {
     profile: Option<StoredProfile>,
     keymap: Option<Keymap>,
     source_profiles: [Option<BridgeProfile>; SOURCE_SLOT_COUNT],
+    source_keymaps: [Option<Keymap>; SOURCE_SLOT_COUNT],
 }
 
 impl ConfigurationUpdates {
@@ -22,6 +23,7 @@ impl ConfigurationUpdates {
             profile: None,
             keymap: None,
             source_profiles: [None; SOURCE_SLOT_COUNT],
+            source_keymaps: [None; SOURCE_SLOT_COUNT],
         }
     }
 
@@ -43,6 +45,22 @@ impl ConfigurationUpdates {
     /// Takes the latest pending global keymap, if any.
     pub fn take_keymap(&mut self) -> Option<Keymap> {
         self.keymap.take()
+    }
+
+    /// Replaces one source slot's pending keymap.
+    pub fn stage_source_keymap(&mut self, slot: u8, keymap: Keymap) -> bool {
+        let Some(pending) = self.source_keymaps.get_mut(usize::from(slot)) else {
+            return false;
+        };
+        *pending = Some(keymap);
+        true
+    }
+
+    /// Takes one source slot's latest pending keymap.
+    pub fn take_source_keymap(&mut self, slot: u8) -> Option<Keymap> {
+        self.source_keymaps
+            .get_mut(usize::from(slot))
+            .and_then(Option::take)
     }
 
     /// Replaces one source slot's pending profile.
@@ -71,6 +89,11 @@ impl ConfigurationUpdates {
     /// Whether any source-specific profile is waiting.
     pub fn has_source_updates(&self) -> bool {
         self.source_profiles.iter().any(Option::is_some)
+    }
+
+    /// Whether any source-specific keymap is waiting.
+    pub fn has_source_keymap_updates(&self) -> bool {
+        self.source_keymaps.iter().any(Option::is_some)
     }
 }
 

@@ -6,8 +6,8 @@ use ukf_nrf52840_ble_usb::config_hid::{
 use ukf_nrf52840_ble_usb::uf2_reset::{
     CONFIG_PROTOCOL_VERSION, CONFIG_REPORT_ID, CONFIG_REPORT_LEN, INJECTED_REPORT_LEN,
     RESET_INTO_BOOTSEL, ResetReportError, UKF_COMMAND_BASE, UKF_INJECT_SOURCE_REPORT,
-    UKF_SELECT_KEYMAP, UKF_SELECT_SOURCE, UKF_WRITE_BEGIN, UKF_WRITE_CHUNK, UKF_WRITE_COMMIT,
-    crc32_ieee,
+    UKF_SELECT_KEYMAP, UKF_SELECT_SOURCE, UKF_SELECT_SOURCE_KEYMAP, UKF_WRITE_BEGIN,
+    UKF_WRITE_CHUNK, UKF_WRITE_COMMIT, crc32_ieee,
 };
 
 fn payload_for(command: u8, data: &[u8]) -> [u8; CONFIG_REPORT_LEN] {
@@ -265,6 +265,37 @@ fn keymap_selector_carries_a_chunk_index_and_rejects_nonzero_reserved_bytes() {
         classify_feature_report(CONFIG_REPORT_ID, &payload_for(UKF_SELECT_KEYMAP, &[7])),
         ConfigRequest::Rejected(ResetReportError::KeymapChunk(7))
     );
+}
+
+#[test]
+fn source_keymap_selector_carries_slot_and_chunk_and_rejects_reserved_bytes() {
+    assert_eq!(
+        classify_feature_report(
+            CONFIG_REPORT_ID,
+            &payload_for(UKF_SELECT_SOURCE_KEYMAP, &[4, 2]),
+        ),
+        ConfigRequest::SelectSourceKeymapChunk { slot: 4, chunk: 2 }
+    );
+
+    let mut data = [0; 26];
+    data[0] = 4;
+    data[1] = 2;
+    data[2] = 1;
+    assert!(matches!(
+        classify_feature_report(
+            CONFIG_REPORT_ID,
+            &payload_for(UKF_SELECT_SOURCE_KEYMAP, &data)
+        ),
+        ConfigRequest::Rejected(ResetReportError::Reserved)
+    ));
+
+    assert!(matches!(
+        classify_feature_report(
+            CONFIG_REPORT_ID,
+            &payload_for(UKF_SELECT_SOURCE_KEYMAP, &[5, 0])
+        ),
+        ConfigRequest::Rejected(ResetReportError::SourceKeymapSlot(5))
+    ));
 }
 
 #[test]

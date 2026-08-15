@@ -22,6 +22,9 @@ fn main() {
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"));
     fs::copy("memory.x", output.join("memory.x")).expect("copy memory.x");
     println!("cargo:rustc-link-search={}", output.display());
+    if env::var("TARGET").as_deref() == Ok("thumbv7em-none-eabihf") {
+        println!("cargo:rustc-link-arg-bins=-Tlink.x");
+    }
     println!("cargo:rerun-if-changed=memory.x");
 
     let head_path = git_output(&manifest_dir, &["rev-parse", "--git-path", "HEAD"]);

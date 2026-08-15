@@ -22,9 +22,11 @@ import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from write_config import TARGET_KEYMAP, open_bridge, send_payload
+from write_config import TARGET_KEYMAP, TARGET_SOURCE_KEYMAP, open_bridge, send_payload
 
 KEYMAP_PAYLOAD_VERSION = 1
+SOURCE_KEYMAP_PAYLOAD_VERSION = 2
+SOURCE_SLOT_COUNT = 5
 KEYMAP_RULE_CAPACITY = 32
 KEYMAP_RULE_WIRE_LEN = 4
 KEYMAP_PAYLOAD_MAX_LEN = 2 + KEYMAP_RULE_CAPACITY * KEYMAP_RULE_WIRE_LEN
@@ -139,6 +141,34 @@ def decode_keymap_payload(payload: bytes) -> list[dict[str, object]]:
     return rules
 
 
+def _source_slot(slot: object) -> int:
+    if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot < SOURCE_SLOT_COUNT:
+        raise ValueError(f"source slot must be an integer from 0 through {SOURCE_SLOT_COUNT - 1}: {slot}")
+    return slot
+
+
+def encode_source_keymap_payload(
+    slot: int, rules: Sequence[Mapping[str, object]]
+) -> bytes:
+    """Encode a source-owned keymap payload for target 6."""
+
+    _source_slot(slot)
+    legacy = encode_keymap_payload(rules)
+    return bytes((SOURCE_KEYMAP_PAYLOAD_VERSION, slot)) + legacy[1:]
+
+
+def decode_source_keymap_payload(payload: bytes) -> tuple[int, list[dict[str, object]]]:
+    """Decode a target 6 payload and return its explicit source slot."""
+
+    if len(payload) < 3:
+        raise ValueError(f"source keymap payload is too short: {len(payload)}")
+    if payload[0] != SOURCE_KEYMAP_PAYLOAD_VERSION:
+        raise ValueError(f"unsupported source keymap payload version {payload[0]}")
+    slot = _source_slot(payload[1])
+    legacy = bytes((KEYMAP_PAYLOAD_VERSION, payload[2])) + payload[3:]
+    return slot, decode_keymap_payload(legacy)
+
+
 def load_payload(path: Path | None, hex_data: str | None) -> bytes:
     """Load either a JSON rule list or a complete wire payload."""
 
@@ -166,16 +196,37 @@ def main() -> None:
     source.add_argument("--rules", type=Path, help="JSON file containing keymap rules")
     source.add_argument("--hex", dest="hex_data", help="complete versioned payload in hex")
     source.add_argument("--us-jis", action="store_true", help="restore the factory keymap")
+    parser.add_argument(
+        "--slot",
+        type=int,
+        choices=range(SOURCE_SLOT_COUNT),
+        help="write one source-owned keymap (target 6) instead of the legacy global keymap (target 5)",
+    )
     args = parser.parse_args()
 
-    payload = (
-        encode_keymap_payload(DEFAULT_US_JIS_RULES)
-        if args.us_jis
-        else load_payload(args.rules, args.hex_data)
-    )
+    if args.slot is None:
+        payload = encode_keymap_payload(DEFAULT_US_JIS_RULES) if args.us_jis else load_payload(args.rules, args.hex_data)
+        target = TARGET_KEYMAP
+    elif args.rules is not None:
+        rules = json.loads(args.rules.read_text(encoding="utf-8"))
+        if not isinstance(rules, list):
+            raise ValueError("keymap JSON must contain a list of rules")
+        payload = encode_source_keymap_payload(args.slot, rules)
+        target = TARGET_SOURCE_KEYMAP
+    elif args.us_jis:
+        payload = encode_source_keymap_payload(args.slot, DEFAULT_US_JIS_RULES)
+        target = TARGET_SOURCE_KEYMAP
+    else:
+        if args.hex_data is None:
+            raise ValueError("provide --rules, --hex, or --us-jis")
+        payload = bytes.fromhex(args.hex_data)
+        encoded_slot, _rules = decode_source_keymap_payload(payload)
+        if encoded_slot != args.slot:
+            raise ValueError(f"source keymap payload belongs to slot {encoded_slot}, not {args.slot}")
+        target = TARGET_SOURCE_KEYMAP
     device = open_bridge()
     try:
-        send_payload(device, payload, target=TARGET_KEYMAP)
+        send_payload(device, payload, target=target)
     finally:
         device.close()
 

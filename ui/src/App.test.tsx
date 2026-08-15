@@ -16,6 +16,7 @@ let pendingKeymapDiagnostics: KeymapRule[] | null = null;
 const sourceWrites: Array<{ slot: number; profile: { usToJis: boolean; capsToCtrl: boolean; swapAltGui: boolean } }> = [];
 const bondWrites: Array<{ operation: string; slot: number; name?: string }> = [];
 const keymapWrites: KeymapRule[][] = [];
+const sourceKeymapWrites: Array<{ slot: number; rules: KeymapRule[] }> = [];
 let keymapDiagnostics: KeymapRule[] = [];
 let sourceDiagnostics = [
   { kind: SOURCE_KIND, slot: 0, transport: 2, transportLabel: 'BLE', state: 5, stateLabel: '接続済み', identityAddress: 'db:e9:25:13:55:25', irkPresent: true, profileFlags: 0b001, name: 'Physical BLE' },
@@ -87,11 +88,34 @@ vi.mock('./webhid', () => ({
     }
     return structuredClone(keymapDiagnostics);
   },
+  readSourceKeymap: async () => {
+    if (staleKeymapReads > 0) {
+      staleKeymapReads -= 1;
+      return [];
+    }
+    if (pendingKeymapDiagnostics !== null) {
+      keymapDiagnostics = pendingKeymapDiagnostics;
+      pendingKeymapDiagnostics = null;
+    }
+    return structuredClone(keymapDiagnostics);
+  },
   writeKeymap: async (_device: unknown, rules: readonly KeymapRule[]) => {
     if (keymapWriteFails) {
       throw new Error('keymap write failed');
     }
     const next = rules.map((rule) => ({ ...rule }));
+    keymapWrites.push(next);
+    staleKeymapReads = 1;
+    pendingKeymapDiagnostics = next;
+    return { state: 2, lastError: 0, summary: 'ok' };
+  },
+  writeSourceKeymap: async (_device: unknown, _slot: number, rules: readonly KeymapRule[]) => {
+    if (keymapWriteFails) {
+      throw new Error('keymap write failed');
+    }
+    const next = rules.map((rule) => ({ ...rule }));
+    sourceKeymapWrites.push({ slot: _slot, rules: next });
+    // Keep the legacy trace for existing editor assertions.
     keymapWrites.push(next);
     staleKeymapReads = 1;
     pendingKeymapDiagnostics = next;
@@ -143,6 +167,7 @@ beforeEach(() => {
   sourceWrites.length = 0;
   bondWrites.length = 0;
   keymapWrites.length = 0;
+  sourceKeymapWrites.length = 0;
   keymapDiagnostics = [];
   staleKeymapReads = 0;
   pendingKeymapDiagnostics = null;
@@ -165,20 +190,26 @@ const initialSnapshot: BridgeSnapshot = {
   ],
 };
 
+async function connectSimulation() {
+  fireEvent.click(await screen.findByRole('button', { name: 'シミュレーションに接続' }));
+}
+
 describe('bridge configuration', () => {
   it('opens on a management dashboard with source and action summaries', async () => {
     render(<App device={new SerialDeviceTransport(new MemoryBridgeDevice())} />);
 
     expect(await screen.findByRole('heading', { name: 'ブリッジ管理' })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: '接続状況' })).toHaveTextContent('接続中のソース2');
-    expect(screen.getByRole('region', { name: '登録状況' })).toHaveTextContent('登録済み1 / 4');
-    expect(screen.getByRole('button', { name: 'Bluetooth Keyboard の設定' })).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: '接続状況' })).toHaveTextContent('接続中のソース0');
+    expect(screen.getByRole('region', { name: '登録状況' })).toHaveTextContent('登録済み0 / 4');
+    expect(screen.getByRole('main').querySelector('.context-badge')).toHaveTextContent('未接続');
+    expect(screen.queryByText('Bluetooth Keyboard')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'キーボードを登録' })).toBeInTheDocument();
   });
 
   it('opens a source settings screen from its dashboard card', async () => {
     render(<App device={new SerialDeviceTransport(new MemoryBridgeDevice())} />);
 
+    await connectSimulation();
     fireEvent.click(await screen.findByRole('button', { name: 'Bluetooth Keyboard の設定' }));
 
     expect(await screen.findByRole('heading', { name: '互換プリセット' })).toBeInTheDocument();
@@ -189,7 +220,7 @@ describe('bridge configuration', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'キーボードを登録' }));
 
-    expect(await screen.findByText(/SIMULATED/)).toBeInTheDocument();
+    expect(await screen.findByText(/ブリッジ未接続です/)).toBeInTheDocument();
   });
 
   it('announces the initial device load accessibly', () => {
@@ -223,11 +254,13 @@ describe('bridge configuration', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('デバイスの状態を読み込めませんでした。');
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '再試行' }));
-    expect(await screen.findByText('USB Keyboard')).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: '接続状況' })).toHaveTextContent('接続中のソース0');
+    expect(screen.queryByText('USB Keyboard')).not.toBeInTheDocument();
   });
 
   it('shows the BLE and virtual sources with their fixed slots', async () => {
     render(<App device={new SerialDeviceTransport(new MemoryBridgeDevice())} />);
+    await connectSimulation();
     expect(await screen.findByText('Bluetooth Keyboard')).toBeInTheDocument();
     expect(screen.getByText('Virtual Input')).toBeInTheDocument();
     expect(screen.getByText(/slot 0/)).toBeInTheDocument();
@@ -237,6 +270,7 @@ describe('bridge configuration', () => {
   it('persists an editable compatibility preset per keyboard', async () => {
     const device = new SerialDeviceTransport(new MemoryBridgeDevice());
     render(<App device={device} />);
+    await connectSimulation();
     fireEvent.click(await screen.findByRole('button', { name: 'キーマップ' }));
     const checkbox = screen.getAllByLabelText('Caps Lock → Control')[1];
     expect(checkbox).not.toBeChecked();
@@ -254,6 +288,7 @@ describe('bridge configuration', () => {
     };
     render(<App device={device} />);
 
+    await connectSimulation();
     fireEvent.click(await screen.findByRole('button', { name: 'キーマップ' }));
     const checkbox = screen.getAllByLabelText('Caps Lock → Control')[1];
     fireEvent.click(checkbox);
@@ -315,12 +350,13 @@ describe('physical bridge', () => {
     runDemoScenario: async () => structuredClone(initialSnapshot),
   };
 
-  it('says the diagnostics are simulated until a board is connected', async () => {
+  it('does not show diagnostics data until a board or simulation is connected', async () => {
     render(<App device={simulator} />);
 
     fireEvent.click(await screen.findByRole('button', { name: '診断' }));
 
-    expect(screen.getByText(/SIMULATED OUTPUT/)).toBeInTheDocument();
+    expect(screen.getByText(/ブリッジ未接続です/)).toBeInTheDocument();
+    expect(screen.queryByText(/SIMULATED OUTPUT/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '実機に接続' })).toBeInTheDocument();
   });
 
@@ -375,7 +411,7 @@ describe('physical bridge', () => {
     fireEvent.click(screen.getByRole('button', { name: '実機に接続' }));
 
     expect(await screen.findByText('デバイスが選択されませんでした。')).toBeInTheDocument();
-    expect(screen.getByText(/SIMULATED OUTPUT/)).toBeInTheDocument();
+    expect(screen.queryByText(/SIMULATED OUTPUT/)).not.toBeInTheDocument();
   });
 
   it('uses physical source diagnostics for keymap and writes only registered BLE/virtual slots', async () => {
@@ -413,6 +449,29 @@ describe('physical bridge', () => {
       { inputUsage: 6, inputShifted: false, outputUsage: 4, outputShifted: false },
     ]));
     expect(await screen.findByRole('spinbutton', { name: '入力usage 1' })).toHaveValue(6);
+  });
+
+  it('selects a source slot before reading and saving its keymap', async () => {
+    keymapDiagnostics = [{ inputUsage: 4, inputShifted: false, outputUsage: 5, outputShifted: false }];
+    render(<App device={simulator} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '実機に接続' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'キーマップ' }));
+    await waitFor(() => expect(screen.getByLabelText('編集対象ソース')).not.toBeDisabled());
+    fireEvent.change(screen.getByLabelText('編集対象ソース'), { target: { value: '4' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'キーマップを読み込む' })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: 'キーマップを読み込む' }));
+    await screen.findByText('1/32ルール・保存済み');
+    fireEvent.change(screen.getByRole('spinbutton', { name: '入力usage 1' }), { target: { value: '6' } });
+    fireEvent.click(screen.getByRole('button', { name: 'キーマップを保存' }));
+
+    await waitFor(() => expect(sourceKeymapWrites).toContainEqual({
+      slot: 4,
+      rules: [{ inputUsage: 6, inputShifted: false, outputUsage: 5, outputShifted: false }],
+    }));
+    await waitFor(() => expect(keymapDiagnostics).toEqual([
+      { inputUsage: 6, inputShifted: false, outputUsage: 5, outputShifted: false },
+    ]));
   });
 
   it('shows the keymap load state, destination, and only enables save after a change', async () => {
@@ -587,12 +646,13 @@ describe('pairing a keyboard', () => {
     expect(screen.getByText('登録済みのBLEキーボードはありません。')).toBeInTheDocument();
   });
 
-  it('shows the simulator list until a bridge is connected', async () => {
+  it('shows no source list until a bridge or simulation is connected', async () => {
     render(<App device={simulator} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'キーボード登録' }));
 
-    expect(screen.getByText(/SIMULATED/)).toBeInTheDocument();
+    expect(await screen.findByText(/ブリッジ未接続です/)).toBeInTheDocument();
+    expect(screen.queryByText(/SIMULATED/)).not.toBeInTheDocument();
   });
 });
 
