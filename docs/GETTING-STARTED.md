@@ -12,7 +12,7 @@ Web UIから設定するまでの利用者向け手順です。実機を使わ�
 - WebHIDを使えるChromeまたはEdge
 - UF2書き込み用のデータ通信対応USBケーブル
 
-書き込み対象のボード、ファームウェア版、ビルド識別子は[リリースページ](https://github.com/tmaru-eng/unified-keyboard-firmware-public/releases)
+書き込み対象のボード、ファームウェア版、ビルド識別子は[リリースページ](https://github.com/tmaru-eng/unified-keyboard-firmware/releases)
 と各リリースノートで確認してください。
 別のボードや別のUF2を推測で書き込まないでください。
 
@@ -70,7 +70,7 @@ uv run pairing_mode.py on
 
 ## 5. Web UIでプロファイルを設定する
 
-公開[Pages](https://tmaru-eng.github.io/unified-keyboard-firmware-public/)を開き、ChromeまたはEdgeで「実機に接続」を選びます。ブラウザのデバイス選択では、
+公開[Pages](https://tmaru-eng.github.io/unified-keyboard-firmware/)を開き、ChromeまたはEdgeで「実機に接続」を選びます。ブラウザのデバイス選択では、
 ブリッジの設定用HID interfaceを選択してください。UIは設定usageだけでなく、許可済みの
 vendor/product identityも検証します。
 
